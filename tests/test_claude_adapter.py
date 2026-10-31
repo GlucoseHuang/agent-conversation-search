@@ -55,3 +55,30 @@ def test_claude_code_parses_messages_tools_and_raw_lines(tmp_path):
     assert session.events[0].raw.line == 2
     assert session.events[2].tool_call_id == "call_1"
     assert any(call.name == "Bash" for call in session.tool_calls)
+
+
+def test_claude_desktop_code_tasks_are_loaded(tmp_path):
+    base = tmp_path / "local-agent-mode-sessions" / "u" / "0" / "hash"
+    session_dir = base / ".claude" / "projects" / "session"
+    session_dir.mkdir(parents=True)
+    path = session_dir / "s1.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "s1",
+                "timestamp": "2026-10-31T10:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            }
+        )
+        + "\n"
+    )
+    tasks = base / ".claude" / "tasks" / "s1"
+    tasks.mkdir(parents=True)
+    (tasks / "1.json").write_text(
+        json.dumps({"id": "1", "subject": "do it", "status": "pending"})
+    )
+
+    session = load(Source(agent="claude-desktop-code", path=path))[0]
+    assert session.todos[0].content == "do it"
+    assert session.todos[0].status == "pending"
