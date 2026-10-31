@@ -143,6 +143,9 @@ def detect_current_session(
         session_id, agent = _session_id(raw)
         if agent_filter and agent and agent != agent_filter:
             return None
+        if agent_filter and not agent:
+            session_id = f"{agent_filter}:{session_id}"
+            agent = agent_filter
         return CurrentSession(
             session_id=session_id,
             agent=agent,

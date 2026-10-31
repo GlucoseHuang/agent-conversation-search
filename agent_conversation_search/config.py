@@ -139,7 +139,7 @@ def load_config() -> dict[str, Any]:
             "max_event_chars": int(
                 os.environ.get("ACS_MAX_EVENT_CHARS")
                 or index.get("max_event_chars")
-                or 60000
+                or 20000
             ),
             "include_archived": str(
                 os.environ.get("ACS_INCLUDE_ARCHIVED", index.get("include_archived", True))

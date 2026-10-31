@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS events (
   raw_line INTEGER,
   raw_offset INTEGER,
   raw_hash TEXT,
+  fts_rowid INTEGER,
   parent_event_id TEXT,
   tool_call_id TEXT,
   subagent_id TEXT,
@@ -168,6 +169,9 @@ def _create_fts(conn: sqlite3.Connection) -> None:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _create_fts(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    if "fts_rowid" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN fts_rowid INTEGER")
     conn.commit()
 
 
@@ -233,14 +237,26 @@ def upsert_session(conn: sqlite3.Connection, session: Session) -> None:
 
 
 def _fts_delete_session(conn: sqlite3.Connection, session_id: str) -> None:
-    try:
-        conn.execute("DELETE FROM events_fts WHERE session_id = ?", (session_id,))
-    except sqlite3.OperationalError:
-        rows = conn.execute(
-            "SELECT rowid FROM events_fts WHERE session_id = ?", (session_id,)
-        ).fetchall()
-        for row in rows:
-            conn.execute("DELETE FROM events_fts WHERE rowid = ?", (row["rowid"],))
+    missing = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE session_id = ? AND fts_rowid IS NULL",
+        (session_id,),
+    ).fetchone()[0]
+    if missing:
+        try:
+            conn.execute("DELETE FROM events_fts WHERE session_id = ?", (session_id,))
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                "SELECT rowid FROM events_fts WHERE session_id = ?", (session_id,)
+            ).fetchall()
+            for row in rows:
+                conn.execute("DELETE FROM events_fts WHERE rowid = ?", (row["rowid"],))
+        return
+    rows = conn.execute(
+        "SELECT fts_rowid FROM events WHERE session_id = ? AND fts_rowid IS NOT NULL",
+        (session_id,),
+    ).fetchall()
+    for row in rows:
+        conn.execute("DELETE FROM events_fts WHERE rowid = ?", (row["fts_rowid"],))
 
 
 def _delete_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
@@ -280,9 +296,14 @@ def replace_session(
             continue
         stored_text = redact_text(event.text or "")
         original_hash = text_hash(event.text or "")
-        truncated = len(stored_text) > max_event_chars
+        event_limit = (
+            min(max_event_chars, 8000)
+            if event.kind in {"tool_call", "tool_result", "file_change"}
+            else max_event_chars
+        )
+        truncated = len(stored_text) > event_limit
         if truncated:
-            stored_text = stored_text[:max_event_chars]
+            stored_text = stored_text[:event_limit]
         raw = event.raw.to_dict()
         conn.execute(
             """
@@ -321,9 +342,13 @@ def replace_session(
             ),
         )
         if stored_text:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO events_fts(event_id, session_id, text) VALUES (?,?,?)",
                 (event.event_id, session.id, stored_text),
+            )
+            conn.execute(
+                "UPDATE events SET fts_rowid = ? WHERE id = ?",
+                (cursor.lastrowid, event.event_id),
             )
 
     conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session.id,))
