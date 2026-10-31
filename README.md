@@ -97,6 +97,7 @@ acs embed --limit 500
 acs embed --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a"
 
 # 压缩旧库：去 FTS 内容副本、重建 tool_calls、截断、VACUUM
+# 实测 3.56 GiB -> 1.75 GiB（约 -54%）
 acs compact
 
 # 先拿当前会话 ID，搜索时排除自己，避免回声
