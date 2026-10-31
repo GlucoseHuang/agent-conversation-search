@@ -42,8 +42,11 @@ acs search --query "上次那个方案" --exclude-session "$CURRENT" --format js
 优先用已安装的 `acs`；没有 PATH 时用 `python3 ~/.agents/skills/agent-conversation-search/acs.py`。
 
 ```bash
-# 刷新索引（默认增量；skill 调用前可先跑一次）
+# 刷新索引（默认增量，只建 FTS；skill 调用前可先跑一次）
 acs index
+
+# 可选：只给某个会话补语义向量（默认不跑全量 embedding）
+acs embed --session "<session_id>" --limit 100
 
 # 语义 + 关键词搜索
 acs search --query "每日简报" --limit 5 --format json

@@ -10,7 +10,7 @@ from typing import Any, Optional
 from .config import ensure_app_dir, load_config
 from .current import detect_current_session
 from .db import connect, get_event, get_session, init_db, stats
-from .embeddings import EmbeddingClient
+from .embeddings import EmbeddingClient, EmbeddingUnavailable, embed_pending
 from .handoff import build_handoff, to_markdown
 from .indexer import index_all
 from .search import search
@@ -51,16 +51,47 @@ def cmd_index(args: argparse.Namespace, config: dict[str, Any]) -> int:
     def progress(message: str) -> None:
         print(message, file=sys.stderr)
 
+    embed = bool(args.embed or args.embed_all)
+    embed_limit = None if args.embed_all else (args.embed_limit or (500 if embed else None))
     result = index_all(
         config=config,
         agents=args.agent,
         full=args.full,
-        no_embed=args.no_embed,
-        embed_limit=args.embed_limit,
+        no_embed=args.no_embed or not embed,
+        embed_limit=embed_limit,
         dry_run=args.dry_run,
         progress=progress,
     )
     print(_json(result))
+    return 0
+
+
+def cmd_embed(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    conn = _open(config)
+    client = _client(config, False)
+    if not client:
+        raise SystemExit("embedding key not configured; set ACS_EMBEDDING_API_KEY or Keychain")
+    limit = None if args.all else args.limit
+
+    def progress(done: int, total: int) -> None:
+        print(f"[acs] embedded {done}/{total}", file=sys.stderr)
+
+    try:
+        result = embed_pending(
+            conn,
+            client,
+            config["index"]["embed_kinds"],
+            limit=limit,
+            batch_size=config["embedding"]["batch_size"],
+            progress=progress,
+            session_id=args.session,
+            agent=args.agent,
+            min_chars=args.min_chars,
+        )
+    except EmbeddingUnavailable as error:
+        raise SystemExit(str(error)) from error
+    print(_json(result))
+    conn.close()
     return 0
 
 
@@ -313,6 +344,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     index = sub.add_parser("index", help="discover and index conversations")
     index.add_argument("--full", action="store_true")
+    index.add_argument("--embed", action="store_true", help="embed a bounded batch after indexing")
+    index.add_argument("--embed-all", action="store_true", help="embed every pending event (can be very large)")
     index.add_argument("--no-embed", action="store_true")
     index.add_argument("--embed-limit", type=int)
     index.add_argument("--dry-run", action="store_true")
@@ -363,6 +396,14 @@ def build_parser() -> argparse.ArgumentParser:
     raw = sub.add_parser("raw", help="print the raw source for an event")
     raw.add_argument("--event", required=True)
     raw.set_defaults(func=cmd_raw)
+
+    embed = sub.add_parser("embed", help="embed pending events (bounded by default)")
+    embed.add_argument("--limit", type=int, default=500)
+    embed.add_argument("--all", action="store_true")
+    embed.add_argument("--session")
+    embed.add_argument("--agent")
+    embed.add_argument("--min-chars", type=int, default=20)
+    embed.set_defaults(func=cmd_embed)
 
     current = sub.add_parser("current", help="show the detected current session")
     current.add_argument("--agent")

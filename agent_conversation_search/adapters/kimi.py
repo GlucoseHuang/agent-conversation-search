@@ -137,7 +137,7 @@ def _blocks(
 
 
 def load(source: Source) -> list[Session]:
-    session_dir = source.path.parent.parent
+    session_dir = source.path.parent.parent.parent
     state = _state(session_dir)
     agent_id = source.path.parent.name
     main = agent_id == "main"

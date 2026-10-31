@@ -86,11 +86,15 @@ security add-generic-password -a "$USER" -s agent-conversation-search -w '<key>'
 ## 使用
 
 ```bash
-# 全量/增量索引（默认增量；第一次会自动建库）
+# 全量/增量索引（默认增量；只建 FTS，不调 embedding）
 acs index
 
-# 只建全文索引，不调 embedding
-acs index --no-embed
+# 可选：建索引后顺便 embedding 一小批（默认 500 条）
+acs index --embed --embed-limit 500
+
+# 单独 embedding 一小批，或只 embedding 某个会话
+acs embed --limit 500
+acs embed --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a"
 
 # 先拿当前会话 ID，搜索时排除自己，避免回声
 CURRENT=$(acs current --format id)
@@ -135,8 +139,9 @@ acs search --query "..." --exclude-session "<agent>:<native_id>"
 ### 混合检索
 
 - SQLite FTS5 全文/关键词，保证专有名词、代码、路径能命中。
-- OpenAI 兼容 embedding 做语义召回；默认只 embedding 消息、reasoning、提问，工具调用/结果仍由 FTS 精确检索，避免把大量工具输出全部向量化。
+- OpenAI 兼容 embedding 做语义召回；embedding 是**显式、限量**的，默认不跑。`acs embed` 默认只处理 500 条、跳过 20 字符以下的短事件，面向消息、reasoning、提问；工具调用/结果仍由 FTS 精确检索。
 - 两路结果用 RRF 合并；embedding 不可用时自动退回 FTS，不阻塞搜索。
+- 全量 embedding 可以用 `acs embed --all`，但历史库可能有十万级事件，耗时很长，按需执行。
 
 ## 接手包（handoff）
 

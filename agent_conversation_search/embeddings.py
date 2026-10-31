@@ -130,18 +130,34 @@ def pending_events(
     conn: sqlite3.Connection,
     kinds: list[str],
     limit: Optional[int] = None,
+    session_id: Optional[str] = None,
+    agent: Optional[str] = None,
+    min_chars: int = 0,
 ) -> list[sqlite3.Row]:
     placeholders = ",".join("?" for _ in kinds)
+    conditions = [
+        "e.text IS NOT NULL",
+        "e.text != ''",
+        f"e.kind IN ({placeholders})",
+        "(m.event_id IS NULL OR m.text_hash != e.text_hash)",
+    ]
+    params: list[Any] = list(kinds)
+    if session_id:
+        conditions.append("e.session_id = ?")
+        params.append(session_id)
+    if agent:
+        conditions.append("e.agent = ?")
+        params.append(agent)
+    if min_chars:
+        conditions.append("length(e.text) >= ?")
+        params.append(min_chars)
     sql = f"""
         SELECT e.id, e.text, e.text_hash
         FROM events e
         LEFT JOIN embeddings m ON m.event_id = e.id
-        WHERE e.text IS NOT NULL AND e.text != ''
-          AND e.kind IN ({placeholders})
-          AND (m.event_id IS NULL OR m.text_hash != e.text_hash)
+        WHERE {' AND '.join(conditions)}
         ORDER BY e.timestamp, e.id
     """
-    params: list[Any] = list(kinds)
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -155,10 +171,20 @@ def embed_pending(
     limit: Optional[int] = None,
     batch_size: int = 16,
     progress: Optional[Any] = None,
+    session_id: Optional[str] = None,
+    agent: Optional[str] = None,
+    min_chars: int = 0,
 ) -> dict[str, int]:
     if not client.available:
         raise EmbeddingUnavailable("ACS_EMBEDDING_API_KEY is not set")
-    rows = pending_events(conn, kinds, limit)
+    rows = pending_events(
+        conn,
+        kinds,
+        limit,
+        session_id=session_id,
+        agent=agent,
+        min_chars=min_chars,
+    )
     done = 0
     for start in range(0, len(rows), batch_size):
         batch = rows[start : start + batch_size]
