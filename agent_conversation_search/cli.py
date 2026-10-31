@@ -62,6 +62,8 @@ def cmd_index(args: argparse.Namespace, config: dict[str, Any]) -> int:
         embed_limit=embed_limit,
         dry_run=args.dry_run,
         progress=progress,
+        active_grace_seconds=args.active_grace,
+        include_active=args.include_active,
     )
     print(_json(result))
     return 0
@@ -362,6 +364,16 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--no-embed", action="store_true")
     index.add_argument("--embed-limit", type=int)
     index.add_argument("--dry-run", action="store_true")
+    index.add_argument(
+        "--include-active",
+        action="store_true",
+        help="also index sources modified within the active grace window",
+    )
+    index.add_argument(
+        "--active-grace",
+        type=int,
+        help="seconds to treat a recently written source as active (default 3600)",
+    )
     index.add_argument("--agent", action="append")
     index.set_defaults(func=cmd_index)
 

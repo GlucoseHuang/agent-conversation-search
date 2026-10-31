@@ -87,7 +87,17 @@ security add-generic-password -a "$USER" -s agent-conversation-search -w '<key>'
 
 ```bash
 # 全量/增量索引（默认增量；只建 FTS，不调 embedding）
+# 默认跳过最近 1 小时仍在写的源，避免大文件/当前会话反复重索引
 acs index
+
+# 强制把活跃/正在写的会话也索引
+acs index --include-active
+acs index --active-grace 0
+```
+
+SQLite 源（OpenCode 等）的签名只看主库 + 非空 WAL，忽略 `-shm` 和空 WAL，避免应用只是触碰文件就触发整库重索引。
+
+```bash
 
 # 可选：建索引后顺便 embedding 一小批（默认 500 条）
 acs index --embed --embed-limit 500

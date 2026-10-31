@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -39,14 +40,16 @@ def discover_all(config: dict[str, Any], agents: Optional[list[str]] = None) -> 
     return sources
 
 
-def _signature(path: Path) -> tuple[int, float]:
-    size = 0
-    mtime = 0.0
-    for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
-        if candidate.exists():
-            stat = candidate.stat()
-            size += stat.st_size
-            mtime = max(mtime, stat.st_mtime)
+def _signature(path: Path, kind: str = "file") -> tuple[int, float]:
+    stat = path.stat()
+    size = stat.st_size
+    mtime = stat.st_mtime
+    if kind == "sqlite":
+        wal = Path(str(path) + "-wal")
+        if wal.exists() and wal.stat().st_size > 0:
+            wal_stat = wal.stat()
+            size += wal_stat.st_size
+            mtime = max(mtime, wal_stat.st_mtime)
     return size, mtime
 
 
@@ -60,11 +63,21 @@ def index_source(
     config: dict[str, Any],
     force: bool = False,
     progress: Optional[Callable[[str], None]] = None,
+    active_grace_seconds: int = 0,
+    include_active: bool = False,
 ) -> dict[str, Any]:
     path = source.path
     if not path.exists():
         return {"path": str(path), "status": "missing", "sessions": 0}
-    size, mtime = _signature(path)
+    size, mtime = _signature(path, source.kind)
+    age = max(0.0, time.time() - mtime)
+    if not force and not include_active and active_grace_seconds and age < active_grace_seconds:
+        return {
+            "path": str(path),
+            "status": "active",
+            "sessions": 0,
+            "age_seconds": round(age, 1),
+        }
     row = _source_row(conn, str(path))
     if (
         not force
@@ -125,6 +138,8 @@ def index_all(
     embed_limit: Optional[int] = None,
     dry_run: bool = False,
     progress: Optional[Callable[[str], None]] = None,
+    active_grace_seconds: Optional[int] = None,
+    include_active: bool = False,
 ) -> dict[str, Any]:
     config = config or load_config()
     sources = discover_all(config, agents)
@@ -137,8 +152,21 @@ def index_all(
         reset_db(conn)
 
     results: list[dict[str, Any]] = []
+    grace = (
+        config["index"]["active_grace_seconds"]
+        if active_grace_seconds is None
+        else active_grace_seconds
+    )
     for source in sources:
-        result = index_source(conn, source, config, force=full, progress=progress)
+        result = index_source(
+            conn,
+            source,
+            config,
+            force=full,
+            progress=progress,
+            active_grace_seconds=grace,
+            include_active=include_active,
+        )
         results.append(result)
 
     embedded: dict[str, Any] = {}

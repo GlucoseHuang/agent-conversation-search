@@ -141,6 +141,11 @@ def load_config() -> dict[str, Any]:
                 or index.get("max_event_chars")
                 or 20000
             ),
+            "active_grace_seconds": int(
+                os.environ.get("ACS_ACTIVE_GRACE_SECONDS")
+                or index.get("active_grace_seconds")
+                or 3600
+            ),
             "event_caps": index.get(
                 "event_caps",
                 {
