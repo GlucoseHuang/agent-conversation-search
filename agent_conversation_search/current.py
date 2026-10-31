@@ -89,7 +89,7 @@ def claude_from_pids(
 def kimi_recent(
     home: Optional[Path] = None,
     cwd: Optional[str] = None,
-    max_age_seconds: int = 1800,
+    max_age_seconds: int = 86400,
 ) -> Optional[CurrentSession]:
     home = home or Path.home()
     cwd_path = Path(cwd or os.getcwd()).resolve()
