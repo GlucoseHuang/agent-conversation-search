@@ -17,10 +17,14 @@ _KEY_VALUE = re.compile(
 )
 
 
+def sanitize_text(text: str) -> str:
+    return text.encode("utf-8", "replace").decode("utf-8", "replace")
+
+
 def redact_text(text: str) -> str:
     if not text:
         return text
-    result = text
+    result = sanitize_text(text)
     for pattern, label in _PATTERNS:
         result = pattern.sub(f"[REDACTED:{label}]", result)
     result = _KEY_VALUE.sub(lambda match: f"{match.group(1)}[REDACTED:SECRET]", result)

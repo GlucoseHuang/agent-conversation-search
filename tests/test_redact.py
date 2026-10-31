@@ -13,3 +13,7 @@ def test_redacts_api_keys_and_bearer_tokens():
 def test_keeps_normal_conversation_text():
     text = "我们在讨论 TTS 方案和每日简报，没有密钥。"
     assert redact_text(text) == text
+
+
+def test_removes_unpaired_surrogates():
+    assert redact_text("hello \ud83e world") == "hello ? world"
