@@ -498,6 +498,7 @@ def _loads(value: Any) -> Any:
 
 def _row_with_metadata(row: sqlite3.Row) -> dict[str, Any]:
     value = dict(row)
+    value.pop("fts_rowid", None)
     value["metadata"] = _loads(value.pop("metadata_json", None))
     value["raw"] = _loads(value.pop("raw_locator", None))
     return value

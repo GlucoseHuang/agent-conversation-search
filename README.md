@@ -156,6 +156,7 @@ acs search --query "..." --exclude-session "<agent>:<native_id>"
 ## 隐私
 
 - 索引默认只存**脱敏后的文本**；API key、token、password、Bearer 等会在入库和发送 embedding 前打码。
+- 超长内容按类型截断（tool 输出 8k、普通消息 20k），`metadata.truncated` 会标记；完整原文仍在原始文件里，用 `raw` 回读。
 - 原始 JSONL / SQLite **不复制、不修改**；只存路径、行号/主键和哈希。
 - `~/.agent-conversation-search/.env` 权限 600，已加入 `.gitignore`。
 - embedding 会把选中的事件文本发到你配置的 OpenAI 兼容端点；如果不想出本机，用 `--no-embed`，只走 FTS。
