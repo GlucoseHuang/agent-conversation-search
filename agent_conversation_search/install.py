@@ -35,7 +35,12 @@ def _trash(path: Path) -> Optional[Path]:
         return None
     trash = Path.home() / ".Trash"
     trash.mkdir(exist_ok=True)
-    target = trash / f"agent-conversation-search-backup-{datetime.now():%Y%m%d-%H%M%S}"
+    stamp = f"agent-conversation-search-backup-{datetime.now():%Y%m%d-%H%M%S}"
+    target = trash / stamp
+    counter = 1
+    while target.exists():
+        target = trash / f"{stamp}-{counter}"
+        counter += 1
     shutil.move(str(path), str(target))
     return target
 
