@@ -92,7 +92,11 @@ acs index
 # 只建全文索引，不调 embedding
 acs index --no-embed
 
-# 搜索
+# 先拿当前会话 ID，搜索时排除自己，避免回声
+CURRENT=$(acs current --format id)
+acs search --query "每日简报" --exclude-session "$CURRENT" --limit 5
+
+# 普通搜索
 acs search --query "每日简报" --limit 5
 acs search --query "TTS 方案" --agent claude-code --date-from 2026-04-01
 acs search --keyword "Lo-Fi" --agent opencode
@@ -112,6 +116,17 @@ acs stats
 ```
 
 `search`、`get`、`handoff` 默认输出 JSON；加 `--format md` 可读版本。agent 调用建议用 JSON。
+
+### 避免搜到自己
+
+`search` 默认会尝试自动排除当前会话，但最可靠的是显式传：
+
+```bash
+acs current --format id
+acs search --query "..." --exclude-session "<agent>:<native_id>"
+```
+
+覆盖范围：Claude Code / Claude Desktop Code 通过 `~/.claude/sessions/<pid>.json` 精确识别；Kimi Code 通过同 cwd 最近更新的 `state.json` 识别（启发式）；Codex / DSH / OpenCode / Hana / WorkBuddy 没有稳定 PID 映射，建议由宿主设置 `ACS_CURRENT_SESSION_ID` 或显式传 ID。显式 `--exclude-session` 优先，不会再自动排除第二个会话。
 
 ### 搜索过滤
 

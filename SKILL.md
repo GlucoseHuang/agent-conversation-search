@@ -15,6 +15,28 @@ description: Search and read conversations across local AI agents (Claude Code, 
 - “这个功能在哪个 agent 的会话里做过？当时用了哪些工具？”
 - 需要跨 agent 查历史决策、约束、文件改动、未完成任务
 
+## 先排除自己（必读）
+
+搜索前必须尽量排除当前会话，否则会搜到自己刚才说的话，形成回声。最可靠的做法是显式传自己的 session id：
+
+```bash
+# 1. 先拿当前会话 ID
+CURRENT=$(acs current --format id)
+
+# 2. 搜索时排除它
+acs search --query "上次那个方案" --exclude-session "$CURRENT" --format json
+```
+
+如果 `acs current` 识别不到，就由宿主设置 `ACS_CURRENT_SESSION_ID`，或直接传已知的 `agent:native_id`。`--exclude-session` 显式传入时优先级最高，不会再自动排除第二个会话。
+
+自动检测的覆盖范围：
+
+- Claude Code / Claude Desktop Code：读 `~/.claude/sessions/<pid>.json` 的 `pid → sessionId`，精确。
+- Kimi Code：取同 cwd 下最近更新的 `state.json`，是启发式。
+- Codex / DSH / OpenCode / Hana / WorkBuddy：没有稳定的 PID 映射，优先用宿主传入的 ID；识别不到时 `search` 会提示。
+
+默认 `search` 也会尝试自动排除，但不要依赖它。`--no-exclude-current` 只在你确实想搜索当前会话时使用。
+
 ## 命令
 
 优先用已安装的 `acs`；没有 PATH 时用 `python3 ~/.agents/skills/agent-conversation-search/acs.py`。

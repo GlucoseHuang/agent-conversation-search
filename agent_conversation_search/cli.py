@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .config import ensure_app_dir, load_config
+from .current import detect_current_session
 from .db import connect, get_event, get_session, init_db, stats
 from .embeddings import EmbeddingClient
 from .handoff import build_handoff, to_markdown
@@ -68,12 +69,32 @@ def cmd_search(args: argparse.Namespace, config: dict[str, Any]) -> int:
     query = args.query or args.keyword
     if not query:
         raise SystemExit("provide --query or --keyword")
+
+    excluded: set[str] = set()
+    if args.exclude_session:
+        excluded.add(args.exclude_session)
+    elif not args.no_exclude_current:
+        current = detect_current_session(agent_filter=args.agent, cwd=None)
+        if current:
+            excluded.add(current.session_id)
+            print(
+                f"[acs] excluding current session {current.session_id} "
+                f"({current.confidence}: {current.source})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[acs] current session not detected; pass --exclude-session <agent>:<id> "
+                "or set ACS_CURRENT_SESSION_ID to avoid echo",
+                file=sys.stderr,
+            )
+
     client = None if args.keyword or args.no_embed else _client(config, False)
     results = search(
         conn,
         query,
         client=client,
-        limit=args.limit,
+        limit=args.limit + (2 if excluded else 0),
         agent=args.agent,
         project=args.project,
         cwd=args.cwd,
@@ -85,12 +106,12 @@ def cmd_search(args: argparse.Namespace, config: dict[str, Any]) -> int:
         subagent=args.subagent,
         include_events=args.events,
     )
-    if args.exclude_session:
+    if excluded:
         results = [
             item
             for item in results
-            if item.get("session_id") != args.exclude_session
-        ]
+            if item.get("session_id") not in excluded
+        ][: args.limit]
     conn.close()
     if args.format == "md":
         print(_search_md(results, args.events))
@@ -225,6 +246,18 @@ def cmd_stats(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_current(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    current = detect_current_session(agent_filter=args.agent, cwd=None)
+    if not current:
+        print("not detected", file=sys.stderr)
+        return 1
+    if args.format == "id":
+        print(current.session_id)
+    else:
+        print(_json(current.__dict__))
+    return 0
+
+
 def cmd_install(args: argparse.Namespace, config: dict[str, Any]) -> int:
     from .install import install
 
@@ -300,7 +333,15 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--tool")
     search_parser.add_argument("--subagent", action="store_true")
     search_parser.add_argument("--events", action="store_true")
-    search_parser.add_argument("--exclude-session")
+    search_parser.add_argument(
+        "--exclude-session",
+        help="your current session id (agent:native_id); explicit exclusion wins",
+    )
+    search_parser.add_argument(
+        "--no-exclude-current",
+        action="store_true",
+        help="do not auto-exclude the current session",
+    )
     search_parser.add_argument("--no-embed", action="store_true")
     search_parser.add_argument("--format", choices=["json", "md"], default="json")
     search_parser.set_defaults(func=cmd_search)
@@ -322,6 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
     raw = sub.add_parser("raw", help="print the raw source for an event")
     raw.add_argument("--event", required=True)
     raw.set_defaults(func=cmd_raw)
+
+    current = sub.add_parser("current", help="show the detected current session")
+    current.add_argument("--agent")
+    current.add_argument("--format", choices=["json", "id"], default="json")
+    current.set_defaults(func=cmd_current)
 
     sources = sub.add_parser("sources", help="list indexed sources")
     sources.set_defaults(func=cmd_sources)
