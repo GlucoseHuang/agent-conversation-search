@@ -81,7 +81,12 @@ def index_source(
     try:
         sessions = module.load(source)
         for session in sessions:
-            replace_session(conn, session, config["index"]["max_event_chars"])
+            replace_session(
+                conn,
+                session,
+                config["index"]["max_event_chars"],
+                config["index"]["event_caps"],
+            )
         remove_stale_sessions(
             conn, source.agent, str(path), [session.id for session in sessions]
         )

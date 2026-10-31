@@ -1,6 +1,7 @@
+from agent_conversation_search.compact import compact
 from agent_conversation_search.db import connect, get_event, get_session, init_db, replace_session
 from agent_conversation_search.handoff import build_handoff
-from agent_conversation_search.models import Event, RawRef, Session
+from agent_conversation_search.models import Event, RawRef, Session, ToolCall
 from agent_conversation_search.search import search
 
 
@@ -62,6 +63,74 @@ def test_reindex_replaces_fts_rows(tmp_path):
     replace_session(conn, _session("新内容"))
     assert search(conn, "旧内容", client=None, limit=5) == []
     assert search(conn, "新内容", client=None, limit=5)[0]["session_id"] == "test:s1"
+
+
+def test_tool_calls_are_enriched_from_events_and_fts_skips_results(tmp_path):
+    session = Session(
+        agent="test",
+        native_id="tools",
+        raw_path="/tmp/tools.jsonl",
+        events=[
+            Event(
+                0,
+                "2026-10-31T10:00:00Z",
+                "user",
+                "message",
+                "alpha unique",
+                RawRef(kind="file", path="/tmp/tools.jsonl", line=1),
+            ),
+            Event(
+                1,
+                "2026-10-31T10:00:01Z",
+                "assistant",
+                "tool_call",
+                "Bash ls",
+                RawRef(kind="file", path="/tmp/tools.jsonl", line=2),
+                tool_call_id="c1",
+            ),
+            Event(
+                2,
+                "2026-10-31T10:00:02Z",
+                "tool",
+                "tool_result",
+                "beta unique",
+                RawRef(kind="file", path="/tmp/tools.jsonl", line=3),
+                tool_call_id="c1",
+            ),
+        ],
+        tool_calls=[
+            ToolCall(id="tc1", name="Bash", call_id="c1", input_text="Bash ls", output_text="beta unique")
+        ],
+    )
+    session.finalize()
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    replace_session(conn, session)
+
+    assert search(conn, "alpha", client=None, limit=5)
+    assert search(conn, "beta", client=None, limit=5) == []
+
+    value = get_session(conn, "test:tools")
+    assert value is not None
+    call = value["tool_calls"][0]
+    assert call["input_text"] == "Bash ls"
+    assert call["output_text"] == "beta unique"
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+    assert "input_text" not in columns
+    assert "output_text" not in columns
+
+
+def test_compact_rebuilds_external_fts(tmp_path):
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    replace_session(conn, _session("compact me"))
+    result = compact(conn, vacuum=False)
+    assert result["after_bytes"] > 0
+    assert search(conn, "compact", client=None, limit=5)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='events_fts'"
+    ).fetchone()[0]
+    assert "content='events'" in sql
 
 
 def test_redaction_applies_before_storage(tmp_path):

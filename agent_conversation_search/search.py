@@ -57,7 +57,7 @@ def _fts_match(conn: sqlite3.Connection, query: str, limit: int, filters: list[s
     sql = f"""
         SELECT e.*, bm25(events_fts) AS rank
         FROM events_fts
-        JOIN events e ON e.id = events_fts.event_id
+        JOIN events e ON e.rowid = events_fts.rowid
         JOIN sessions s ON s.id = e.session_id
         WHERE {where}
         ORDER BY rank
@@ -73,7 +73,9 @@ def _fts_match(conn: sqlite3.Connection, query: str, limit: int, filters: list[s
 
 
 def _like_match(conn: sqlite3.Connection, query: str, limit: int, filters: list[str], params: list[Any]) -> list[dict[str, Any]]:
-    where = " AND ".join(["e.text LIKE ?", *filters])
+    where = " AND ".join(
+        ["e.text LIKE ?", "e.kind IN ('message','reasoning','tool_call','question')", *filters]
+    )
     sql = f"""
         SELECT e.*
         FROM events e

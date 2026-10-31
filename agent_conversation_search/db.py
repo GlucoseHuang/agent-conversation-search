@@ -74,7 +74,6 @@ CREATE TABLE IF NOT EXISTS events (
   raw_line INTEGER,
   raw_offset INTEGER,
   raw_hash TEXT,
-  fts_rowid INTEGER,
   parent_event_id TEXT,
   tool_call_id TEXT,
   subagent_id TEXT,
@@ -90,9 +89,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   session_id TEXT,
   name TEXT,
   call_id TEXT,
-  status TEXT,
-  input_text TEXT,
-  output_text TEXT
+  status TEXT
 );
 
 CREATE TABLE IF NOT EXISTS goals (
@@ -153,29 +150,65 @@ def connect(path: Optional[Path] = None, readonly: bool = False) -> sqlite3.Conn
     return conn
 
 
+FTS_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events
+    WHEN new.kind IN ('message','reasoning','tool_call','question')
+      AND new.text IS NOT NULL AND new.text != ''
+    BEGIN
+      INSERT INTO events_fts(rowid, text) VALUES (new.rowid, new.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events
+    WHEN old.kind IN ('message','reasoning','tool_call','question')
+      AND old.text IS NOT NULL AND old.text != ''
+    BEGIN
+      INSERT INTO events_fts(events_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS events_fts_au_del AFTER UPDATE ON events
+    WHEN old.kind IN ('message','reasoning','tool_call','question')
+      AND old.text IS NOT NULL AND old.text != ''
+    BEGIN
+      INSERT INTO events_fts(events_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS events_fts_au_ins AFTER UPDATE ON events
+    WHEN new.kind IN ('message','reasoning','tool_call','question')
+      AND new.text IS NOT NULL AND new.text != ''
+    BEGIN
+      INSERT INTO events_fts(rowid, text) VALUES (new.rowid, new.text);
+    END
+    """,
+]
+
+
 def _create_fts(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts "
-            "USING fts5(event_id UNINDEXED, session_id UNINDEXED, text, tokenize='trigram')"
-        )
-    except sqlite3.OperationalError:
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts "
-            "USING fts5(event_id UNINDEXED, session_id UNINDEXED, text)"
-        )
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts "
+        "USING fts5(text, content='events', content_rowid='rowid', tokenize='trigram')"
+    )
+    for statement in FTS_TRIGGERS:
+        conn.execute(statement)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _create_fts(conn)
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
-    if "fts_rowid" not in columns:
-        conn.execute("ALTER TABLE events ADD COLUMN fts_rowid INTEGER")
     conn.commit()
 
 
 def reset_db(conn: sqlite3.Connection) -> None:
+    for trigger in [
+        "events_fts_ai",
+        "events_fts_ad",
+        "events_fts_au_del",
+        "events_fts_au_ins",
+    ]:
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for table in [
         "events_fts",
         "events",
@@ -236,31 +269,7 @@ def upsert_session(conn: sqlite3.Connection, session: Session) -> None:
     )
 
 
-def _fts_delete_session(conn: sqlite3.Connection, session_id: str) -> None:
-    missing = conn.execute(
-        "SELECT COUNT(*) FROM events WHERE session_id = ? AND fts_rowid IS NULL",
-        (session_id,),
-    ).fetchone()[0]
-    if missing:
-        try:
-            conn.execute("DELETE FROM events_fts WHERE session_id = ?", (session_id,))
-        except sqlite3.OperationalError:
-            rows = conn.execute(
-                "SELECT rowid FROM events_fts WHERE session_id = ?", (session_id,)
-            ).fetchall()
-            for row in rows:
-                conn.execute("DELETE FROM events_fts WHERE rowid = ?", (row["rowid"],))
-        return
-    rows = conn.execute(
-        "SELECT fts_rowid FROM events WHERE session_id = ? AND fts_rowid IS NOT NULL",
-        (session_id,),
-    ).fetchall()
-    for row in rows:
-        conn.execute("DELETE FROM events_fts WHERE rowid = ?", (row["fts_rowid"],))
-
-
 def _delete_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
-    _fts_delete_session(conn, session_id)
     conn.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM goals WHERE session_id = ?", (session_id,))
@@ -269,10 +278,21 @@ def _delete_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
 
+DEFAULT_EVENT_CAPS = {
+    "message": 8000,
+    "reasoning": 4000,
+    "tool_call": 2000,
+    "tool_result": 2000,
+    "question": 8000,
+    "file_change": 2000,
+}
+
+
 def replace_session(
     conn: sqlite3.Connection,
     session: Session,
-    max_event_chars: int = 60000,
+    max_event_chars: int = 20000,
+    caps: Optional[dict[str, int]] = None,
 ) -> None:
     session.finalize()
     upsert_session(conn, session)
@@ -289,18 +309,14 @@ def replace_session(
         conn.execute("DELETE FROM embeddings WHERE event_id = ?", (old_id,))
         conn.execute("DELETE FROM events WHERE id = ?", (old_id,))
 
-    _fts_delete_session(conn, session.id)
+    limits = caps or DEFAULT_EVENT_CAPS
 
     for event in session.events:
         if not event.event_id:
             continue
         stored_text = redact_text(event.text or "")
         original_hash = text_hash(event.text or "")
-        event_limit = (
-            min(max_event_chars, 8000)
-            if event.kind in {"tool_call", "tool_result", "file_change"}
-            else max_event_chars
-        )
+        event_limit = limits.get(event.kind, max_event_chars)
         truncated = len(stored_text) > event_limit
         if truncated:
             stored_text = stored_text[:event_limit]
@@ -341,32 +357,13 @@ def replace_session(
                 _json({**event.metadata, **({"truncated": True} if truncated else {})}),
             ),
         )
-        if stored_text:
-            cursor = conn.execute(
-                "INSERT INTO events_fts(event_id, session_id, text) VALUES (?,?,?)",
-                (event.event_id, session.id, stored_text),
-            )
-            conn.execute(
-                "UPDATE events SET fts_rowid = ? WHERE id = ?",
-                (cursor.lastrowid, event.event_id),
-            )
-
-    conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session.id,))
+        conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session.id,))
     for call in session.tool_calls:
         conn.execute(
             "INSERT OR REPLACE INTO tool_calls "
-            "(id, event_id, session_id, name, call_id, status, input_text, output_text) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (
-                call.id,
-                call.event_id,
-                session.id,
-                call.name,
-                call.call_id,
-                call.status,
-                redact_text(call.input_text or "")[:max_event_chars] if call.input_text else None,
-                redact_text(call.output_text or "")[:max_event_chars] if call.output_text else None,
-            ),
+            "(id, event_id, session_id, name, call_id, status) "
+            "VALUES (?,?,?,?,?,?)",
+            (call.id, call.event_id, session.id, call.name, call.call_id, call.status),
         )
 
     conn.execute("DELETE FROM goals WHERE session_id = ?", (session.id,))
@@ -458,7 +455,21 @@ def get_session(conn: sqlite3.Connection, session_id: str) -> Optional[dict[str,
     session["tool_calls"] = [
         dict(call)
         for call in conn.execute(
-            "SELECT * FROM tool_calls WHERE session_id = ? ORDER BY id", (session_id,)
+            """
+            SELECT tc.*,
+              (SELECT e1.text FROM events e1
+               WHERE e1.session_id = tc.session_id AND e1.kind = 'tool_call'
+                 AND e1.tool_call_id = tc.call_id
+               ORDER BY e1.seq LIMIT 1) AS input_text,
+              (SELECT e2.text FROM events e2
+               WHERE e2.session_id = tc.session_id AND e2.kind = 'tool_result'
+                 AND e2.tool_call_id = tc.call_id
+               ORDER BY e2.seq LIMIT 1) AS output_text
+            FROM tool_calls tc
+            WHERE tc.session_id = ?
+            ORDER BY tc.id
+            """,
+            (session_id,),
         )
     ]
     session["goals"] = [

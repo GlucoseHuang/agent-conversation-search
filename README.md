@@ -96,6 +96,9 @@ acs index --embed --embed-limit 500
 acs embed --limit 500
 acs embed --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a"
 
+# 压缩旧库：去 FTS 内容副本、重建 tool_calls、截断、VACUUM
+acs compact
+
 # 先拿当前会话 ID，搜索时排除自己，避免回声
 CURRENT=$(acs current --format id)
 acs search --query "每日简报" --exclude-session "$CURRENT" --limit 5
@@ -138,7 +141,7 @@ acs search --query "..." --exclude-session "<agent>:<native_id>"
 
 ### 混合检索
 
-- SQLite FTS5 全文/关键词，保证专有名词、代码、路径能命中。
+- SQLite FTS5 external-content 全文/关键词，保证专有名词、代码、路径能命中；不额外保存一份 FTS 文本副本。
 - OpenAI 兼容 embedding 做语义召回；embedding 是**显式、限量**的，默认不跑。`acs embed` 默认只处理 500 条、跳过 20 字符以下的短事件，面向消息、reasoning、提问；工具调用/结果仍由 FTS 精确检索。
 - 两路结果用 RRF 合并；embedding 不可用时自动退回 FTS，不阻塞搜索。
 - 全量 embedding 可以用 `acs embed --all`，但历史库可能有十万级事件，耗时很长，按需执行。
@@ -161,7 +164,8 @@ acs search --query "..." --exclude-session "<agent>:<native_id>"
 ## 隐私
 
 - 索引默认只存**脱敏后的文本**；API key、token、password、Bearer 等会在入库和发送 embedding 前打码。
-- 超长内容按类型截断（tool 输出 8k、普通消息 20k），`metadata.truncated` 会标记；完整原文仍在原始文件里，用 `raw` 回读。
+- 超长内容按类型截断（消息 8k、reasoning 4k、tool 输出 2k），`metadata.truncated` 会标记；完整原文仍在原始文件里，用 `raw` 回读。
+- 全文索引只覆盖消息、reasoning、工具调用名/输入和提问；工具结果不进 FTS，避免 trigram 索引膨胀，需要时用 `raw` 回原文。
 - 原始 JSONL / SQLite **不复制、不修改**；只存路径、行号/主键和哈希。
 - `~/.agent-conversation-search/.env` 权限 600，已加入 `.gitignore`。
 - embedding 会把选中的事件文本发到你配置的 OpenAI 兼容端点；如果不想出本机，用 `--no-embed`，只走 FTS。

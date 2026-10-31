@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from .compact import compact
 from .config import ensure_app_dir, load_config
 from .current import detect_current_session
 from .db import connect, get_event, get_session, init_db, stats
@@ -277,6 +278,18 @@ def cmd_stats(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_compact(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    conn = _open(config)
+
+    def progress(message: str) -> None:
+        print(f"[acs] {message}", file=sys.stderr)
+
+    result = compact(conn, vacuum=not args.no_vacuum, progress=progress)
+    conn.close()
+    print(_json(result))
+    return 0
+
+
 def cmd_current(args: argparse.Namespace, config: dict[str, Any]) -> int:
     current = detect_current_session(agent_filter=args.agent, cwd=None)
     if not current:
@@ -404,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--agent")
     embed.add_argument("--min-chars", type=int, default=20)
     embed.set_defaults(func=cmd_embed)
+
+    compact_parser = sub.add_parser("compact", help="compact an existing index in place")
+    compact_parser.add_argument("--no-vacuum", action="store_true")
+    compact_parser.set_defaults(func=cmd_compact)
 
     current = sub.add_parser("current", help="show the detected current session")
     current.add_argument("--agent")

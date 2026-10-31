@@ -141,6 +141,17 @@ def load_config() -> dict[str, Any]:
                 or index.get("max_event_chars")
                 or 20000
             ),
+            "event_caps": index.get(
+                "event_caps",
+                {
+                    "message": 8000,
+                    "reasoning": 4000,
+                    "tool_call": 2000,
+                    "tool_result": 2000,
+                    "question": 8000,
+                    "file_change": 2000,
+                },
+            ),
             "include_archived": str(
                 os.environ.get("ACS_INCLUDE_ARCHIVED", index.get("include_archived", True))
             ).lower()

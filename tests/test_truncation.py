@@ -33,7 +33,7 @@ def test_tool_output_and_message_truncation(tmp_path):
     value = get_session(conn, "test:long")
     assert value is not None
     tool_event, message_event = value["events"]
-    assert len(tool_event["text"]) == 8000
-    assert len(message_event["text"]) == 20000
+    assert len(tool_event["text"]) == 2000
+    assert len(message_event["text"]) == 8000
     assert tool_event["metadata"]["truncated"] is True
     assert message_event["metadata"]["truncated"] is True
