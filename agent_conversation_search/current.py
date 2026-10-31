@@ -113,7 +113,10 @@ def kimi_recent(
                 continue
         except OSError:
             continue
-        updated = int(value.get("updatedAt") or 0)
+        try:
+            updated = int(value.get("updatedAt") or 0)
+        except (TypeError, ValueError):
+            continue
         if updated and now_ms - updated > max_age_seconds * 1000:
             continue
         if not value.get("id"):

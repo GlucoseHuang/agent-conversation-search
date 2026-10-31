@@ -144,6 +144,10 @@ def connect(path: Optional[Path] = None, readonly: bool = False) -> sqlite3.Conn
     else:
         conn = sqlite3.connect(db_path, timeout=60)
         conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            db_path.chmod(0o600)
+        except OSError:
+            pass
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=60000")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -154,6 +158,7 @@ FTS_TRIGGERS = [
     """
     CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events
     WHEN new.kind IN ('message','reasoning','tool_call','question')
+      AND new.role NOT IN ('tool','toolResult','tool_result')
       AND new.text IS NOT NULL AND new.text != ''
     BEGIN
       INSERT INTO events_fts(rowid, text) VALUES (new.rowid, new.text);
@@ -162,35 +167,51 @@ FTS_TRIGGERS = [
     """
     CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events
     WHEN old.kind IN ('message','reasoning','tool_call','question')
+      AND old.role NOT IN ('tool','toolResult','tool_result')
       AND old.text IS NOT NULL AND old.text != ''
     BEGIN
       INSERT INTO events_fts(events_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
     END
     """,
     """
-    CREATE TRIGGER IF NOT EXISTS events_fts_au_del AFTER UPDATE ON events
-    WHEN old.kind IN ('message','reasoning','tool_call','question')
-      AND old.text IS NOT NULL AND old.text != ''
+    CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE ON events
+    WHEN (
+      (old.kind IN ('message','reasoning','tool_call','question')
+       AND old.role NOT IN ('tool','toolResult','tool_result')
+       AND old.text IS NOT NULL AND old.text != '')
+      OR
+      (new.kind IN ('message','reasoning','tool_call','question')
+       AND new.role NOT IN ('tool','toolResult','tool_result')
+       AND new.text IS NOT NULL AND new.text != '')
+    )
     BEGIN
-      INSERT INTO events_fts(events_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-    END
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS events_fts_au_ins AFTER UPDATE ON events
-    WHEN new.kind IN ('message','reasoning','tool_call','question')
-      AND new.text IS NOT NULL AND new.text != ''
-    BEGIN
-      INSERT INTO events_fts(rowid, text) VALUES (new.rowid, new.text);
+      INSERT INTO events_fts(events_fts, rowid, text)
+        SELECT 'delete', old.rowid, old.text
+        WHERE old.kind IN ('message','reasoning','tool_call','question')
+          AND old.role NOT IN ('tool','toolResult','tool_result')
+          AND old.text IS NOT NULL AND old.text != '';
+      INSERT INTO events_fts(rowid, text)
+        SELECT new.rowid, new.text
+        WHERE new.kind IN ('message','reasoning','tool_call','question')
+          AND new.role NOT IN ('tool','toolResult','tool_result')
+          AND new.text IS NOT NULL AND new.text != '';
     END
     """,
 ]
 
 
 def _create_fts(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='events_fts'"
+    ).fetchone()
+    if row and "content='events'" not in (row["sql"] or ""):
+        raise RuntimeError("legacy FTS schema detected; run `acs compact` first")
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts "
         "USING fts5(text, content='events', content_rowid='rowid', tokenize='trigram')"
     )
+    for trigger in ("events_fts_au_del", "events_fts_au_ins"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
     for statement in FTS_TRIGGERS:
         conn.execute(statement)
 
@@ -198,6 +219,12 @@ def _create_fts(conn: sqlite3.Connection) -> None:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _create_fts(conn)
+    for index in (
+        "CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_goals_session ON goals(session_id)",
+    ):
+        conn.execute(index)
     conn.commit()
 
 
@@ -205,6 +232,7 @@ def reset_db(conn: sqlite3.Connection) -> None:
     for trigger in [
         "events_fts_ai",
         "events_fts_ad",
+        "events_fts_au",
         "events_fts_au_del",
         "events_fts_au_ins",
     ]:
@@ -310,6 +338,7 @@ def replace_session(
         conn.execute("DELETE FROM events WHERE id = ?", (old_id,))
 
     limits = caps or DEFAULT_EVENT_CAPS
+    conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session.id,))
 
     for event in session.events:
         if not event.event_id:
@@ -357,7 +386,6 @@ def replace_session(
                 _json({**event.metadata, **({"truncated": True} if truncated else {})}),
             ),
         )
-        conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session.id,))
     for call in session.tool_calls:
         conn.execute(
             "INSERT OR REPLACE INTO tool_calls "
@@ -373,7 +401,7 @@ def replace_session(
             "(id, session_id, objective, status, phase, budget_json, created_at, updated_at, event_id) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
             (
-                goal.id,
+                f"{session.id}:{goal.id}",
                 session.id,
                 redact_text(goal.objective or "")[:max_event_chars],
                 goal.status,
@@ -392,7 +420,7 @@ def replace_session(
             "(id, session_id, content, status, priority, position, blocked_by, event_id) "
             "VALUES (?,?,?,?,?,?,?,?)",
             (
-                todo.id,
+                f"{session.id}:{todo.id}",
                 session.id,
                 redact_text(todo.content or "")[:max_event_chars],
                 todo.status,
@@ -522,10 +550,27 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
     events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     embedded = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
     sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+    fts: dict[str, Any] = {}
+    try:
+        fts["docs"] = conn.execute("SELECT COUNT(*) FROM events_fts_docsize").fetchone()[0]
+        fts["expected"] = conn.execute(
+            "SELECT COUNT(*) FROM events "
+            "WHERE kind IN ('message','reasoning','tool_call','question') "
+            "AND role NOT IN ('tool','toolResult','tool_result') "
+            "AND text IS NOT NULL AND text != ''"
+        ).fetchone()[0]
+        fts["missing"] = fts["expected"] - fts["docs"]
+        fts["orphans"] = conn.execute(
+            "SELECT COUNT(*) FROM events_fts_docsize d "
+            "LEFT JOIN events e ON e.rowid = d.id WHERE e.rowid IS NULL"
+        ).fetchone()[0]
+    except sqlite3.Error:
+        pass
     return {
         "sessions": sum(row["sessions"] for row in rows),
         "events": events,
         "embeddings": embedded,
         "sources": sources,
         "by_agent": {row["agent"]: row["sessions"] for row in rows},
+        "fts": fts,
     }

@@ -38,7 +38,7 @@ def _trash(path: Path) -> Optional[Path]:
     stamp = f"agent-conversation-search-backup-{datetime.now():%Y%m%d-%H%M%S}"
     target = trash / stamp
     counter = 1
-    while target.exists():
+    while target.exists() or target.is_symlink():
         target = trash / f"{stamp}-{counter}"
         counter += 1
     shutil.move(str(path), str(target))
@@ -54,6 +54,8 @@ def install(
     repo = Path(__file__).resolve().parent.parent
     target = (target or DEFAULT_TARGET).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and target.resolve() == repo.resolve():
+        raise SystemExit("refusing to install over the source repository")
     result: dict[str, Any] = {"target": str(target), "links": [], "backups": []}
 
     if target.exists() or target.is_symlink():
@@ -111,7 +113,7 @@ def install(
             "ACS_EMBEDDING_BASE_URL=\nACS_EMBEDDING_API_KEY=\nACS_EMBEDDING_MODEL=qwen3.7-text-embedding\n",
             encoding="utf-8",
         )
-        env_path.chmod(0o600)
+    env_path.chmod(0o600)
     result["env"] = str(env_path)
 
     if replace_old:

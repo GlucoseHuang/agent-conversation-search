@@ -80,6 +80,7 @@ def load(source: Source) -> list[Session]:
             title = obj.get("customTitle") or title
         elif line_type == "ai-title":
             title = obj.get("title") or obj.get("aiTitle") or title
+            cwd = cwd or obj.get("cwd")
         elif line_type == "session-meta":
             session_id = obj.get("sessionId") or session_id
             meta = obj.get("meta") or {}
@@ -126,6 +127,7 @@ def load(source: Source) -> list[Session]:
             seq += 1
         elif line_type == "function_call_result":
             call_id = obj.get("callId") or obj.get("call_id")
+            status = obj.get("status") or "completed"
             text = content_text(obj.get("output") or obj.get("content") or obj.get("result"))
             events.append(
                 Event(
@@ -136,6 +138,7 @@ def load(source: Source) -> list[Session]:
                     text,
                     file_ref(source.path, line_no, raw),
                     tool_call_id=call_id,
+                    metadata={"status": status},
                 )
             )
             calls.append(
@@ -143,7 +146,7 @@ def load(source: Source) -> list[Session]:
                     id=stable_id(source.path, line_no, call_id, "result"),
                     name="tool_result",
                     call_id=call_id,
-                    status="completed",
+                    status=status,
                     output_text=text,
                 )
             )

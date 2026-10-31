@@ -154,3 +154,24 @@ class Session:
                 for call in self.tool_calls:
                     if call.call_id == event.tool_call_id and not call.event_id:
                         call.event_id = event.event_id
+        self._normalize_tool_calls()
+
+    def _normalize_tool_calls(self) -> None:
+        groups: dict[str, ToolCall] = {}
+        for call in self.tool_calls:
+            key = call.call_id or call.id
+            current = groups.get(key)
+            if current is None:
+                groups[key] = call
+                continue
+            primary = current if current.name != "tool_result" else call
+            result = call if primary is current else current
+            if primary.status is None:
+                primary.status = result.status
+            if result.status in {"error", "failed"}:
+                primary.status = result.status
+            primary.input_text = primary.input_text or result.input_text
+            primary.output_text = primary.output_text or result.output_text
+            primary.event_id = primary.event_id or result.event_id
+            groups[key] = primary
+        self.tool_calls = list(groups.values())

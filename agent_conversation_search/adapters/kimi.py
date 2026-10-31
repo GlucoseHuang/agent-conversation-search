@@ -59,6 +59,7 @@ def _blocks(
     path: Path,
     line: int,
     raw: bytes,
+    tool_call_id: Optional[str] = None,
 ) -> tuple[list[Event], list[ToolCall]]:
     events: list[Event] = []
     calls: list[ToolCall] = []
@@ -78,17 +79,43 @@ def _blocks(
         if block_type in {"text", "input_text", "output_text"}:
             text = block.get("text") or block.get("input_text") or block.get("output_text") or ""
             if text:
-                events.append(Event(seq, timestamp, role, "message", text, file_ref(path, line, raw)))
+                kind = "tool_result" if role in {"tool", "toolResult", "tool_result"} else "message"
+                event_role = "tool" if kind == "tool_result" else role
+                events.append(
+                    Event(
+                        seq,
+                        timestamp,
+                        event_role,
+                        kind,
+                        text,
+                        file_ref(path, line, raw),
+                        tool_call_id=tool_call_id,
+                    )
+                )
                 seq += 1
-        elif block_type in {"thinking", "reasoning"}:
-            text = block.get("thinking") or block.get("text") or ""
+        elif block_type in {"thinking", "reasoning", "think"}:
+            text = block.get("thinking") or block.get("think") or block.get("text") or ""
             if text:
                 events.append(Event(seq, timestamp, role, "reasoning", text, file_ref(path, line, raw)))
                 seq += 1
+        elif block_type == "image_url":
+            value = block.get("image_url") or {}
+            url = value.get("url") if isinstance(value, dict) else str(value)
+            event = Event(
+                seq,
+                timestamp,
+                role,
+                "attachment",
+                "image_url",
+                file_ref(path, line, raw),
+                metadata={"type": "image_url", "url": url if not str(url).startswith("data:") else "[data-uri]"},
+            )
+            events.append(event)
+            seq += 1
         elif block_type in {"toolCall", "tool_call", "tool_use"}:
             name = block.get("name") or block.get("tool") or "tool"
-            arguments = block.get("arguments") or block.get("input") or {}
-            call_id = block.get("id") or block.get("callId")
+            arguments = block.get("args") or block.get("arguments") or block.get("input") or {}
+            call_id = block.get("toolCallId") or block.get("id") or block.get("callId")
             events.append(
                 Event(
                     seq,
@@ -116,11 +143,11 @@ def _blocks(
                 Event(
                     seq,
                     timestamp,
-                    role,
+                    "tool",
                     "tool_result",
                     text,
                     file_ref(path, line, raw),
-                    tool_call_id=call_id,
+                    tool_call_id=call_id or tool_call_id,
                 )
             )
             calls.append(
@@ -155,7 +182,16 @@ def load(source: Source) -> list[Session]:
 
     def add(event: Event) -> None:
         nonlocal seq
-        key = (event.role or "", event.kind, event.text[:2000])
+        if event.tool_call_id and event.kind in {"tool_call", "tool_result"}:
+            key = (event.kind, event.tool_call_id, event.text[:2000])
+        else:
+            key = (
+                event.role or "",
+                event.kind,
+                event.text[:2000],
+                event.tool_call_id,
+                event.timestamp,
+            )
         if key in seen:
             return
         seen.add(key)
@@ -184,6 +220,7 @@ def load(source: Source) -> list[Session]:
                 source.path,
                 line_no,
                 raw,
+                tool_call_id=message.get("toolCallId"),
             )
             for event in new_events:
                 add(event)
@@ -202,6 +239,7 @@ def load(source: Source) -> list[Session]:
                 source.path,
                 line_no,
                 raw,
+                tool_call_id=message.get("toolCallId"),
             )
             for event in new_events:
                 add(event)
@@ -211,13 +249,18 @@ def load(source: Source) -> list[Session]:
             event_kind = event.get("type")
             data = event.get("data") if isinstance(event.get("data"), dict) else event
             if event_kind == "tool.call":
-                call_id = data.get("callId") or data.get("call_id") or data.get("id")
+                call_id = (
+                    data.get("toolCallId")
+                    or data.get("callId")
+                    or data.get("call_id")
+                    or data.get("id")
+                )
                 if call_id and call_id in seen_calls:
                     continue
                 if call_id:
                     seen_calls.add(call_id)
                 name = data.get("name") or data.get("tool") or "tool"
-                arguments = data.get("arguments") or data.get("input") or {}
+                arguments = data.get("args") or data.get("arguments") or data.get("input") or {}
                 text = tool_text(name, arguments)
                 add(
                     Event(

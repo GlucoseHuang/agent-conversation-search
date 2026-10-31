@@ -106,9 +106,12 @@ acs index --embed --embed-limit 500
 acs embed --limit 500
 acs embed --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a"
 
-# 压缩旧库：去 FTS 内容副本、重建 tool_calls、截断、VACUUM
+# 压缩旧库：默认先备份，再去 FTS 内容副本、重建 tool_calls、截断、VACUUM
 # 实测 3.56 GiB -> 1.75 GiB（约 -54%）
 acs compact
+
+# 明确不需要备份时（磁盘紧张）
+acs compact --no-backup
 
 # 先拿当前会话 ID，搜索时排除自己，避免回声
 CURRENT=$(acs current --format id)
@@ -153,7 +156,7 @@ acs search --query "..." --exclude-session "<agent>:<native_id>"
 ### 混合检索
 
 - SQLite FTS5 external-content 全文/关键词，保证专有名词、代码、路径能命中；不额外保存一份 FTS 文本副本。
-- OpenAI 兼容 embedding 做语义召回；embedding 是**显式、限量**的，默认不跑。`acs embed` 默认只处理 500 条、跳过 20 字符以下的短事件，面向消息、reasoning、提问；工具调用/结果仍由 FTS 精确检索。
+- OpenAI 兼容 embedding 做语义召回；embedding 是**显式、限量**的，默认不跑。`acs embed` 默认只处理 500 条、跳过 20 字符以下的短事件，面向消息、reasoning、提问；工具调用名/输入仍由 FTS 精确检索，工具结果用 `raw` 回原文。
 - 两路结果用 RRF 合并；embedding 不可用时自动退回 FTS，不阻塞搜索。
 - 全量 embedding 可以用 `acs embed --all`，但历史库可能有十万级事件，耗时很长，按需执行。
 

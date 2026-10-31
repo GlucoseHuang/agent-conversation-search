@@ -1,7 +1,7 @@
 from agent_conversation_search.compact import compact
 from agent_conversation_search.db import connect, get_event, get_session, init_db, replace_session
 from agent_conversation_search.handoff import build_handoff
-from agent_conversation_search.models import Event, RawRef, Session, ToolCall
+from agent_conversation_search.models import Event, RawRef, Session, Todo, ToolCall
 from agent_conversation_search.search import search
 
 
@@ -63,6 +63,35 @@ def test_reindex_replaces_fts_rows(tmp_path):
     replace_session(conn, _session("新内容"))
     assert search(conn, "旧内容", client=None, limit=5) == []
     assert search(conn, "新内容", client=None, limit=5)[0]["session_id"] == "test:s1"
+
+
+def test_same_session_replace_keeps_fts_documents(tmp_path):
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    session = _session("same-token")
+    replace_session(conn, session)
+    before = conn.execute("SELECT COUNT(*) FROM events_fts_docsize").fetchone()[0]
+    replace_session(conn, session)
+    after = conn.execute("SELECT COUNT(*) FROM events_fts_docsize").fetchone()[0]
+    assert before == 2
+    assert after == before
+    assert search(conn, "same-token", client=None, limit=5)
+
+
+def test_todos_from_different_sessions_do_not_collide(tmp_path):
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    first = _session("first")
+    first.native_id = "a"
+    first.todos = [Todo(id="1", content="a")]
+    first.finalize()
+    second = _session("second")
+    second.native_id = "b"
+    second.todos = [Todo(id="1", content="b")]
+    second.finalize()
+    replace_session(conn, first)
+    replace_session(conn, second)
+    assert conn.execute("SELECT COUNT(*) FROM todos").fetchone()[0] == 2
 
 
 def test_tool_calls_are_enriched_from_events_and_fts_skips_results(tmp_path):
@@ -131,6 +160,34 @@ def test_compact_rebuilds_external_fts(tmp_path):
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='events_fts'"
     ).fetchone()[0]
     assert "content='events'" in sql
+
+
+def test_fts_skips_tool_roles_and_merges_result_calls(tmp_path):
+    session = Session(
+        agent="test",
+        native_id="roles",
+        raw_path="/tmp/roles.jsonl",
+        events=[
+            Event(0, None, "user", "message", "visible", RawRef(path="/tmp/r", line=1)),
+            Event(1, None, "tool", "message", "tool-output", RawRef(path="/tmp/r", line=2)),
+            Event(2, None, "toolResult", "message", "hana-output", RawRef(path="/tmp/r", line=3)),
+        ],
+        tool_calls=[
+            ToolCall(id="c", name="Bash", call_id="x", input_text="Bash ls"),
+            ToolCall(id="r", name="tool_result", call_id="x", status="error", output_text="bad"),
+        ],
+    )
+    session.finalize()
+    assert len(session.tool_calls) == 1
+    assert session.tool_calls[0].name == "Bash"
+    assert session.tool_calls[0].status == "error"
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    replace_session(conn, session)
+    assert conn.execute("SELECT COUNT(*) FROM events_fts_docsize").fetchone()[0] == 1
+    assert search(conn, "visible", client=None, limit=5)
+    assert search(conn, "tool-output", client=None, limit=5) == []
+    assert search(conn, "hana-output", client=None, limit=5) == []
 
 
 def test_redaction_applies_before_storage(tmp_path):

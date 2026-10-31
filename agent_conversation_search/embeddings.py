@@ -158,7 +158,7 @@ def pending_events(
         WHERE {' AND '.join(conditions)}
         ORDER BY e.timestamp, e.id
     """
-    if limit:
+    if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
     return list(conn.execute(sql, params))

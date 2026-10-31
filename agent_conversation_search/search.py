@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from typing import Any, Optional
 
 from .embeddings import EmbeddingClient, EmbeddingUnavailable, cosine, unpack_vector
@@ -17,6 +18,7 @@ def _filters(
     kind: Optional[str] = None,
     tool: Optional[str] = None,
     subagent: bool = False,
+    exclude_sessions: Optional[set[str]] = None,
 ) -> tuple[list[str], list[Any]]:
     conditions: list[str] = []
     params: list[Any] = []
@@ -43,11 +45,17 @@ def _filters(
         params.append(kind)
     if tool:
         conditions.append(
-            "EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.session_id = e.session_id AND tc.name LIKE ?)"
+            "e.kind = 'tool_call' AND EXISTS ("
+            "SELECT 1 FROM tool_calls tc WHERE tc.session_id = e.session_id "
+            "AND tc.call_id = e.tool_call_id AND tc.name LIKE ?)"
         )
         params.append(f"%{tool}%")
     if subagent:
         conditions.append("(e.subagent_id IS NOT NULL OR s.parent_id IS NOT NULL)")
+    if exclude_sessions:
+        placeholders = ",".join("?" for _ in exclude_sessions)
+        conditions.append(f"e.session_id NOT IN ({placeholders})")
+        params.extend(sorted(exclude_sessions))
     return conditions, params
 
 
@@ -65,7 +73,8 @@ def _fts_match(conn: sqlite3.Connection, query: str, limit: int, filters: list[s
     """
     try:
         rows = conn.execute(sql, [quoted, *params, limit]).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as error:
+        print(f"[acs] FTS error, falling back to LIKE: {error}", file=sys.stderr)
         rows = []
     if rows:
         return [dict(row) for row in rows]
@@ -74,7 +83,12 @@ def _fts_match(conn: sqlite3.Connection, query: str, limit: int, filters: list[s
 
 def _like_match(conn: sqlite3.Connection, query: str, limit: int, filters: list[str], params: list[Any]) -> list[dict[str, Any]]:
     where = " AND ".join(
-        ["e.text LIKE ?", "e.kind IN ('message','reasoning','tool_call','question')", *filters]
+        [
+            "e.text LIKE ?",
+            "e.kind IN ('message','reasoning','tool_call','question')",
+            "e.role NOT IN ('tool','toolResult','tool_result')",
+            *filters,
+        ]
     )
     sql = f"""
         SELECT e.*
@@ -102,7 +116,9 @@ def _vector_matches(
         query_vector = client.embed_query(query)
     except EmbeddingUnavailable:
         return []
-    where = " AND ".join(["m.vector IS NOT NULL", *filters])
+    where = " AND ".join(
+        ["m.vector IS NOT NULL", "m.text_hash = e.text_hash", *filters]
+    )
     sql = f"""
         SELECT e.*, m.vector AS vector, m.dim AS dim
         FROM embeddings m
@@ -137,6 +153,7 @@ def search(
     kind: Optional[str] = None,
     tool: Optional[str] = None,
     subagent: bool = False,
+    exclude_sessions: Optional[set[str]] = None,
     include_events: bool = False,
     fts_limit: int = 200,
 ) -> list[dict[str, Any]]:
@@ -150,6 +167,7 @@ def search(
         kind=kind,
         tool=tool,
         subagent=subagent,
+        exclude_sessions=exclude_sessions,
     )
     fts_rows = _fts_match(conn, query, fts_limit, filters, params)
     vector_rows = (

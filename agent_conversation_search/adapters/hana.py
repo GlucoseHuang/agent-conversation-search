@@ -118,6 +118,11 @@ def _blocks(
             seq += 1
         elif block_type in {"image", "document"}:
             filename = block.get("filename") or block.get("name") or block_type
+            safe = {
+                key: value
+                for key, value in block.items()
+                if key in {"type", "filename", "name", "mime_type", "mime", "path"}
+            }
             event = Event(
                 seq,
                 timestamp,
@@ -125,7 +130,7 @@ def _blocks(
                 "attachment",
                 filename,
                 file_ref(path, line, raw),
-                metadata=block,
+                metadata=safe,
             )
             events.append(event)
             attachments.append(
@@ -171,6 +176,25 @@ def load(source: Source) -> list[Session]:
             message = obj.get("message") or {}
             role = message.get("role") or "assistant"
             message_timestamp = iso(message.get("timestamp")) or timestamp
+            if role in {"toolResult", "tool_result"}:
+                event = Event(
+                    seq,
+                    message_timestamp,
+                    "tool",
+                    "tool_result",
+                    content_text(message.get("content")),
+                    file_ref(source.path, line_no, raw),
+                    tool_call_id=message.get("toolCallId"),
+                    metadata={
+                        "tool_name": message.get("toolName"),
+                        "is_error": bool(message.get("isError")),
+                    },
+                )
+                events.append(event)
+                seq += 1
+                if message_timestamp:
+                    updated_at = message_timestamp
+                continue
             new_events, new_calls, new_attachments = _blocks(
                 message.get("content"),
                 role,

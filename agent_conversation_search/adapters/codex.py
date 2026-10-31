@@ -149,7 +149,7 @@ def load(source: Source) -> list[Session]:
                     )
                 )
                 seq += 1
-            elif item_type == "function_call_output":
+            elif item_type in {"function_call_output", "custom_tool_call_output"}:
                 call_id = payload.get("call_id")
                 text = content_text(payload.get("output"))
                 event = Event(

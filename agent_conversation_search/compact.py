@@ -12,13 +12,29 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _backup(conn: sqlite3.Connection, db_path: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = db_path.with_name(f"{db_path.name}.bak-{stamp}")
+    counter = 1
+    while target.exists():
+        target = db_path.with_name(f"{db_path.name}.bak-{stamp}-{counter}")
+        counter += 1
+    dest = sqlite3.connect(target)
+    try:
+        conn.backup(dest)
+    finally:
+        dest.close()
+    return target
+
+
 def compact(
     conn: sqlite3.Connection,
     vacuum: bool = True,
     progress: Optional[Callable[[str], None]] = None,
+    caps: Optional[dict[str, int]] = None,
+    backup: bool = True,
 ) -> dict[str, Any]:
     db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
-    before = db_path.stat().st_size if db_path.exists() else 0
 
     def note(message: str) -> None:
         if progress:
@@ -26,9 +42,16 @@ def compact(
 
     conn.commit()
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    backup_path: Optional[Path] = None
+    if backup:
+        note(f"backing up to {db_path.name}.bak-*")
+        backup_path = _backup(conn, db_path)
+    before = db_path.stat().st_size if db_path.exists() else 0
+
     for trigger in [
         "events_fts_ai",
         "events_fts_ad",
+        "events_fts_au",
         "events_fts_au_del",
         "events_fts_au_ins",
     ]:
@@ -52,8 +75,19 @@ def compact(
         conn.execute("ALTER TABLE tool_calls_new RENAME TO tool_calls")
         conn.commit()
 
+    note("prefixing goal/todo ids by session")
+    conn.execute(
+        "UPDATE OR IGNORE todos SET id = session_id || ':' || id "
+        "WHERE id NOT LIKE session_id || ':%'"
+    )
+    conn.execute(
+        "UPDATE OR IGNORE goals SET id = session_id || ':' || id "
+        "WHERE id NOT LIKE session_id || ':%'"
+    )
+    conn.commit()
+
     note("truncating event text by kind")
-    for kind, limit in DEFAULT_EVENT_CAPS.items():
+    for kind, limit in (caps or DEFAULT_EVENT_CAPS).items():
         conn.execute(
             "UPDATE events SET text = substr(text, 1, ?) "
             "WHERE kind = ? AND text IS NOT NULL AND length(text) > ?",
@@ -74,6 +108,12 @@ def compact(
         conn.execute("VACUUM")
         conn.commit()
 
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_todos_session ON todos(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_session ON goals(session_id)")
+
     note("building external-content FTS")
     conn.execute(
         "CREATE VIRTUAL TABLE events_fts USING fts5("
@@ -83,6 +123,7 @@ def compact(
         "INSERT INTO events_fts(rowid, text) "
         "SELECT rowid, text FROM events "
         "WHERE kind IN ('message','reasoning','tool_call','question') "
+        "AND role NOT IN ('tool','toolResult','tool_result') "
         "AND text IS NOT NULL AND text != ''"
     )
     for statement in FTS_TRIGGERS:
@@ -94,6 +135,7 @@ def compact(
     after = db_path.stat().st_size if db_path.exists() else 0
     return {
         "db": str(db_path),
+        "backup": str(backup_path) if backup_path else None,
         "before_bytes": before,
         "after_bytes": after,
         "saved_bytes": max(0, before - after),
@@ -113,6 +155,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Compact an existing index")
     parser.add_argument("--no-vacuum", action="store_true")
+    parser.add_argument("--no-backup", action="store_true")
     parser.add_argument("--db")
     args = parser.parse_args()
     config = load_config()
@@ -122,7 +165,14 @@ def main() -> int:
     def progress(message: str) -> None:
         print(message, flush=True)
 
-    print(json.dumps(compact(conn, vacuum=not args.no_vacuum, progress=progress), ensure_ascii=False, indent=2))
+    result = compact(
+        conn,
+        vacuum=not args.no_vacuum,
+        progress=progress,
+        caps=config["index"]["event_caps"],
+        backup=not args.no_backup,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     conn.close()
     return 0
 

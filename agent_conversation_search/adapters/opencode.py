@@ -148,7 +148,19 @@ def load(source: Source) -> list[Session]:
             elif part_type == "file":
                 filename = data.get("filename") or "attachment"
                 mime = data.get("mime")
-                event = Event(seq, timestamp, role, "attachment", filename, raw, metadata=data)
+                event = Event(
+                    seq,
+                    timestamp,
+                    role,
+                    "attachment",
+                    filename,
+                    raw,
+                    metadata={
+                        key: value
+                        for key, value in data.items()
+                        if key in {"type", "filename", "mime", "path"}
+                    },
+                )
                 events.append(event)
                 attachments.append(
                     Attachment(

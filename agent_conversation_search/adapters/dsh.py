@@ -217,9 +217,23 @@ def load(source: Source) -> list[Session]:
                 )
             )
         elif event_type == "tool/result":
-            call_id = data.get("toolCallId") or data.get("callId") or data.get("tool_call_id")
             message = data.get("message") or data.get("result") or data
+            call_id = (
+                data.get("toolCallId")
+                or data.get("callId")
+                or data.get("tool_call_id")
+                or (message.get("toolCallId") if isinstance(message, dict) else None)
+                or (
+                    message.get("source", {}).get("callId")
+                    if isinstance(message, dict) and isinstance(message.get("source"), dict)
+                    else None
+                )
+            )
             text = content_text(message.get("content") if isinstance(message, dict) else message)
+            is_error = bool(
+                (message.get("isError") if isinstance(message, dict) else False)
+                or data.get("isError")
+            )
             add(
                 Event(
                     seq,
@@ -229,7 +243,7 @@ def load(source: Source) -> list[Session]:
                     text,
                     file_ref(source.path, line_no, raw, "zstd"),
                     tool_call_id=call_id,
-                    metadata={"is_error": data.get("isError", False)},
+                    metadata={"is_error": is_error},
                 )
             )
             calls.append(
@@ -237,7 +251,7 @@ def load(source: Source) -> list[Session]:
                     id=stable_id(source.path, line_no, call_id, "result"),
                     name="tool_result",
                     call_id=call_id,
-                    status="error" if data.get("isError") else "completed",
+                    status="error" if is_error else "completed",
                     output_text=text,
                 )
             )
@@ -276,15 +290,6 @@ def load(source: Source) -> list[Session]:
                         id=data.get("childId") or stable_id(line_no, data.get("label")),
                         content=data.get("label") or "subagent",
                         status="running",
-                        position=len(todos),
-                    )
-                )
-            elif event_type == "tool-workflow/agent-end":
-                todos.append(
-                    Todo(
-                        id=data.get("childId") or stable_id(line_no, data.get("label")),
-                        content=data.get("label") or "subagent",
-                        status=data.get("outcome") or "completed",
                         position=len(todos),
                     )
                 )

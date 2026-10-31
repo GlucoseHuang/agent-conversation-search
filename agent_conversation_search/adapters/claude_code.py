@@ -134,7 +134,7 @@ def _blocks(
             event = Event(
                 seq,
                 timestamp,
-                role,
+                "tool",
                 "tool_result",
                 text,
                 file_ref(path, line, raw),
@@ -227,6 +227,12 @@ def _load_session(
                 seq += 1
         elif line_type == "attachment":
             attachment = obj.get("attachment") or {}
+            if not (
+                attachment.get("filename")
+                or attachment.get("path")
+                or attachment.get("type") in {"image", "document", "file"}
+            ):
+                continue
             text = attachment.get("filename") or attachment.get("type") or "attachment"
             event = Event(
                 seq,
@@ -235,7 +241,11 @@ def _load_session(
                 "attachment",
                 text,
                 file_ref(path, line_no, raw),
-                metadata=attachment,
+                metadata={
+                    key: value
+                    for key, value in attachment.items()
+                    if key in {"type", "filename", "path", "mime_type", "media_type", "size"}
+                },
             )
             events.append(event)
             attachments.append(

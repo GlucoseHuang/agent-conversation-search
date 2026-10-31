@@ -37,6 +37,22 @@ def _client(config: dict[str, Any], no_embed: bool) -> Optional[EmbeddingClient]
     )
 
 
+def _resolve_session_id(conn: sqlite3.Connection, value: str) -> str:
+    if ":" in value:
+        return value
+    rows = conn.execute(
+        "SELECT id FROM sessions WHERE native_id = ?", (value,)
+    ).fetchall()
+    return rows[0]["id"] if len(rows) == 1 else value
+
+
+def _non_negative(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
+
+
 def _open(config: dict[str, Any], init: bool = False) -> sqlite3.Connection:
     if init:
         ensure_app_dir()
@@ -53,7 +69,15 @@ def cmd_index(args: argparse.Namespace, config: dict[str, Any]) -> int:
         print(message, file=sys.stderr)
 
     embed = bool(args.embed or args.embed_all)
-    embed_limit = None if args.embed_all else (args.embed_limit or (500 if embed else None))
+    embed_limit = (
+        None
+        if args.embed_all
+        else (
+            args.embed_limit
+            if args.embed_limit is not None
+            else (500 if embed else None)
+        )
+    )
     result = index_all(
         config=config,
         agents=args.agent,
@@ -106,10 +130,11 @@ def cmd_search(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
     excluded: set[str] = set()
     if args.exclude_session:
-        excluded.add(args.exclude_session)
+        excluded.add(_resolve_session_id(conn, args.exclude_session))
     elif not args.no_exclude_current:
         current = detect_current_session(agent_filter=args.agent, cwd=None)
         if current:
+            current.session_id = _resolve_session_id(conn, current.session_id)
             excluded.add(current.session_id)
             print(
                 f"[acs] excluding current session {current.session_id} "
@@ -128,7 +153,7 @@ def cmd_search(args: argparse.Namespace, config: dict[str, Any]) -> int:
         conn,
         query,
         client=client,
-        limit=args.limit + (2 if excluded else 0),
+        limit=args.limit,
         agent=args.agent,
         project=args.project,
         cwd=args.cwd,
@@ -138,14 +163,10 @@ def cmd_search(args: argparse.Namespace, config: dict[str, Any]) -> int:
         kind=args.kind,
         tool=args.tool,
         subagent=args.subagent,
+        exclude_sessions=excluded,
         include_events=args.events,
+        fts_limit=max(200, min(2000, args.limit * 4)),
     )
-    if excluded:
-        results = [
-            item
-            for item in results
-            if item.get("session_id") not in excluded
-        ][: args.limit]
     conn.close()
     if args.format == "md":
         print(_search_md(results, args.events))
@@ -200,7 +221,7 @@ def cmd_raw(args: argparse.Namespace, config: dict[str, Any]) -> int:
     conn.close()
     if not event:
         raise SystemExit(f"event not found: {args.event}")
-    print(_read_raw(event["raw"]))
+    print(_read_raw(event["raw"]), end="")
     return 0
 
 
@@ -286,7 +307,13 @@ def cmd_compact(args: argparse.Namespace, config: dict[str, Any]) -> int:
     def progress(message: str) -> None:
         print(f"[acs] {message}", file=sys.stderr)
 
-    result = compact(conn, vacuum=not args.no_vacuum, progress=progress)
+    result = compact(
+        conn,
+        vacuum=not args.no_vacuum,
+        progress=progress,
+        caps=config["index"]["event_caps"],
+        backup=not args.no_backup,
+    )
     conn.close()
     print(_json(result))
     return 0
@@ -297,6 +324,12 @@ def cmd_current(args: argparse.Namespace, config: dict[str, Any]) -> int:
     if not current:
         print("not detected", file=sys.stderr)
         return 1
+    try:
+        conn = _open(config)
+        current.session_id = _resolve_session_id(conn, current.session_id)
+        conn.close()
+    except SystemExit:
+        pass
     if args.format == "id":
         print(current.session_id)
     else:
@@ -322,7 +355,8 @@ def _search_md(results: list[dict[str, Any]], events: bool) -> str:
         return "No matching conversations found."
     lines = [f"Found {len(results)} result(s):", ""]
     for index, item in enumerate(results, 1):
-        raw = item.get("raw") or {}
+        match = item.get("match") or item
+        raw = (match.get("raw") if isinstance(match, dict) else None) or item.get("raw") or {}
         lines.append(
             f"[{index}] {item.get('agent')} - {item.get('title') or 'untitled'} "
             f"(score {item.get('score', 0):.4f})"
@@ -330,7 +364,6 @@ def _search_md(results: list[dict[str, Any]], events: bool) -> str:
         lines.append(f"    session: {item.get('session_id')}")
         if raw:
             lines.append(f"    raw: {raw.get('path')}:{raw.get('line') or raw.get('pk')}")
-        match = item.get("match") or item
         if match:
             lines.append(f"    {match.get('role')}/{match.get('kind')}: {(match.get('snippet') or '')[:300]}")
         lines.append("")
@@ -380,7 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = sub.add_parser("search", help="search conversations")
     search_parser.add_argument("--query")
     search_parser.add_argument("--keyword")
-    search_parser.add_argument("--limit", type=int, default=10)
+    search_parser.add_argument("--limit", type=_non_negative, default=10)
     search_parser.add_argument("--agent")
     search_parser.add_argument("--project")
     search_parser.add_argument("--cwd")
@@ -388,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--date-to")
     search_parser.add_argument("--role")
     search_parser.add_argument("--kind")
-    search_parser.add_argument("--tool")
+    search_parser.add_argument("--tool", help="filter tool_call events by tool name")
     search_parser.add_argument("--subagent", action="store_true")
     search_parser.add_argument("--events", action="store_true")
     search_parser.add_argument(
@@ -423,7 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
     raw.set_defaults(func=cmd_raw)
 
     embed = sub.add_parser("embed", help="embed pending events (bounded by default)")
-    embed.add_argument("--limit", type=int, default=500)
+    embed.add_argument("--limit", type=_non_negative, default=500)
     embed.add_argument("--all", action="store_true")
     embed.add_argument("--session")
     embed.add_argument("--agent")
@@ -432,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     compact_parser = sub.add_parser("compact", help="compact an existing index in place")
     compact_parser.add_argument("--no-vacuum", action="store_true")
+    compact_parser.add_argument("--no-backup", action="store_true")
     compact_parser.set_defaults(func=cmd_compact)
 
     current = sub.add_parser("current", help="show the detected current session")

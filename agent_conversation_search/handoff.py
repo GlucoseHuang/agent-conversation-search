@@ -6,7 +6,7 @@ from typing import Any, Optional
 from .models import now_iso
 
 _PATH_RE = re.compile(
-    r"(?:/Users|/private|/tmp|/opt|/Applications|/Library|/Volumes)/[^\s\"'<>|]+"
+    r"(?:/Users|/private|/tmp|/opt|/Applications|/Library|/Volumes)(?:[^\n\"'<>|,}\]])+"
 )
 _DECISION_RE = re.compile(
     r"(决定|方案|结论|选择|采用|不再|改为|必须|不能|约束|结论是|最终)"
@@ -36,6 +36,7 @@ def _extract_files(session: dict[str, Any]) -> list[dict[str, Any]]:
     for call in session.get("tool_calls") or []:
         blob = f"{call.get('input_text') or ''}\n{call.get('output_text') or ''}"
         for path in _PATH_RE.findall(blob):
+            path = path.rstrip(".,;:)]}")
             found.setdefault(
                 path,
                 {
@@ -100,12 +101,21 @@ def build_handoff(
         for event in events
         if event.get("kind") == "message" and event.get("role") in {"user", "assistant"}
     ]
-    recent_messages = [_message_ref(event, max_message_chars) for event in messages[-recent:]]
-    recent_events = [
-        _message_ref(event, min(max_message_chars, 1500))
-        for event in events[-recent * 2 :]
-        if event.get("kind") in {"message", "reasoning", "tool_call", "tool_result", "file_change"}
-    ]
+    recent_messages = (
+        [_message_ref(event, max_message_chars) for event in messages[-recent:]]
+        if recent > 0
+        else []
+    )
+    recent_events = (
+        [
+            _message_ref(event, min(max_message_chars, 1500))
+            for event in events[-recent * 2 :]
+            if event.get("kind")
+            in {"message", "reasoning", "tool_call", "tool_result", "file_change"}
+        ]
+        if recent > 0
+        else []
+    )
     key_messages: list[dict[str, Any]] = []
     if messages:
         key_messages.append(_message_ref(messages[0], max_message_chars))

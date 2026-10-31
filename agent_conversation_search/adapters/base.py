@@ -30,6 +30,8 @@ def iso(value: Any) -> Optional[str]:
         number = float(value)
     except (TypeError, ValueError):
         return None
+    if number == 0:
+        return None
     if number > 10_000_000_000:
         number /= 1000
     elif number < 1_000_000_000:
@@ -61,10 +63,13 @@ def iter_zstd_lines(path: Path) -> Iterator[tuple[int, bytes]]:
         return
     import zstandard as zstd
 
-    with path.open("rb") as handle:
-        reader = zstd.ZstdDecompressor().stream_reader(handle, read_across_frames=True)
-        for line_no, raw in enumerate(reader, 1):
+    try:
+        with path.open("rb") as handle:
+            data = zstd.ZstdDecompressor().stream_reader(handle).read()
+        for line_no, raw in enumerate(data.splitlines(), 1):
             yield line_no, raw
+    except Exception as error:
+        raise RuntimeError(f"zstd fallback failed for {path}: {error}") from error
 
 
 def iter_jsonl(path: Path, compressed: Optional[str] = None) -> Iterator[tuple[int, bytes, Any]]:
