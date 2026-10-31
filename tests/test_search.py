@@ -55,6 +55,15 @@ def test_search_get_and_handoff_keep_raw_pointer(tmp_path):
     assert package["recent_messages"][0]["text"].startswith("安排每日简报")
 
 
+def test_reindex_replaces_fts_rows(tmp_path):
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    replace_session(conn, _session("旧内容"))
+    replace_session(conn, _session("新内容"))
+    assert search(conn, "旧内容", client=None, limit=5) == []
+    assert search(conn, "新内容", client=None, limit=5)[0]["session_id"] == "test:s1"
+
+
 def test_redaction_applies_before_storage(tmp_path):
     conn = connect(tmp_path / "index.db")
     init_db(conn)
