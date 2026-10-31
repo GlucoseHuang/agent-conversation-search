@@ -1,117 +1,102 @@
 ---
-name: conversation-search
-description: 在所有历史对话中做语义检索。从 opencode/Hanako 的 session JSONL 文件构建本地向量索引（DashScope text-embedding-v4 + SQLite），支持语义查询、关键词兜底、session 聚合、按日期过滤。用于查找过去的决定、讨论、上下文。
+name: agent-conversation-search
+description: Search and read conversations across local AI agents (Claude Code, Claude Desktop Code, Codex, Kimi Code, OpenCode, DeepSeek Harness, HanaAgent, WorkBuddy). Use when the user asks to find a past conversation, inspect tool calls/subagents/goals, or hand off work from another agent. Every result includes the original file/SQLite location so the agent can verify against the raw source.
 ---
 
-# conversation-search
+# agent-conversation-search
 
-给 agent 加长期记忆。会话向量化存入本地 SQLite，按语义相似度检索。
+跨 agent 对话检索。目标不是“搜到一段文字”，而是让当前 agent 找到另一个 agent 的原始会话、工具调用、子代理、goal/todo，并能回到原始文件核对。
 
-## 做什么
+## 什么时候用
 
-- `embed.py` 读 session JSONL，把每条消息向量化后存进 SQLite。默认增量运行，只处理新增或变更的 session。
-- `search.py` 把查询也向量化，按余弦相似度排序，并按 session 聚合。匹配上的那条消息会和整个对话上下文一起返回。
+- “找一下 Claude Desktop 之前那个对话”
+- “上次我们在 Codex 里怎么决定这个方案的？”
+- “把 Kimi 那个任务的上下文接过来”
+- “这个功能在哪个 agent 的会话里做过？当时用了哪些工具？”
+- 需要跨 agent 查历史决策、约束、文件改动、未完成任务
 
-依赖阿里云百炼 `text-embedding-v4`（1024 维，OpenAI 兼容接口）。不需要额外的向量数据库。
+## 命令
 
-## 命令速查
+优先用已安装的 `acs`；没有 PATH 时用 `python3 ~/.agents/skills/agent-conversation-search/acs.py`。
 
 ```bash
-# 建索引 / 刷新索引
-python3 embed.py
-python3 embed.py --full       # 清空重建
-python3 embed.py --dry-run    # 只统计不写入
+# 刷新索引（默认增量；skill 调用前可先跑一次）
+acs index
 
-# 语义检索
-python3 search.py --query "TTS 语音合成" --limit 5
+# 语义 + 关键词搜索
+acs search --query "每日简报" --limit 5 --format json
 
-# 关键词兜底
-python3 search.py --keyword "Lo-Fi"
+# 限定 agent / 日期 / 工具
+acs search --keyword "TTS" --agent claude-code --date-from 2026-04-01 --format json
+acs search --query "文件改动" --tool Edit --format json
 
-# 按日期范围
-python3 search.py --query "毕业论文" --date-from 2026-04-01 --date-to 2026-04-27
+# 读完整会话（事件、tool calls、goals、todos、attachments）
+acs get --session "<session_id>" --format json
 
-# JSON 输出
-python3 search.py --query "音乐生成" --format json
+# 结构化接手包（导航用，不替代 get）
+acs handoff --session "<session_id>" --recent 12 --format json
 
-# 排除当前 session
-python3 search.py --query "音乐生成" --exclude-session <session_id>
-
-# 只看匹配的那条消息，不带上下文
-python3 search.py --query "音乐生成" --no-full-session
+# 回到原始行 / 原始 SQLite 行
+acs raw --event "<event_id>"
 ```
 
-### embed.py 参数
+## 输出契约
 
-| 参数 | 作用 |
-| --- | --- |
-| `--full` | 清空数据库，从头重建 |
-| `--dry-run` | 只统计消息数和预估费用，不写库 |
+`search` 返回 session 列表，每个结果包含：
 
-### search.py 参数
+- `session_id`、`agent`、`title`、`project`、`created_at`、`updated_at`
+- `match`：命中的事件（`event_id`、`role`、`kind`、`snippet`、`raw`）
+- `score`、`matches`
 
-| 参数 | 作用 |
-| --- | --- |
-| `--query` | 语义查询，走向量检索 |
-| `--keyword` | 纯 `LIKE` 文本匹配，不调 API |
-| `--limit` | 返回几个 session（默认 5，最大 20） |
-| `--date-from` / `--date-to` | 限制日期范围，格式 `YYYY-MM-DD` |
-| `--exclude-session` | 排除某个 session id（避免回声当前对话） |
-| `--no-full-session` | 只显示匹配的消息，不带完整 session |
-| `--format` | `readable`（默认）或 `json` |
+`get` 返回完整 session：
 
-## 配置
+- `events[]`：每条都有 `id`、`seq`、`role`、`kind`、`text`、`raw`
+- `tool_calls[]`、`goals[]`、`todos[]`、`attachments[]`
+- `raw_locator`：会话级原始位置
 
-所有配置走环境变量，参考 `.env.example`：
+`handoff` 返回：
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `DASHSCOPE_API_KEY` | 无 | 必填 |
-| `CONVERSATION_SESSIONS_DIR` | `~/.hanako/agents/hanako/sessions` | session JSONL 所在目录 |
-| `CONVERSATION_DB_PATH` | `./conversations.db` | SQLite 索引文件路径 |
-| `DASHSCOPE_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | |
-| `EMBEDDING_MODEL` | `text-embedding-v4` | |
-| `EMBEDDING_DIMENSIONS` | `1024` | |
+- `source`（agent/session/cwd/raw/event_count）
+- `goals`、`todos`、`blockers`、`files`、`decisions`
+- `recent_messages`、`key_messages`、`tool_state`
+- `raw_refs`（每项对应的原始位置）
+- `full_context.command`（指向 `get` 的完整上下文）
 
-## 典型用法
+## 使用原则
 
-- 找回过去的决定：`python3 search.py --query "上次用哪个模型"`
-- 找技术讨论：`python3 search.py --query "TTS 方案"`
-- 翻历史想法：`python3 search.py --query "想做什么项目"`
-- 时间窗口收窄：搭配 `--date-from` / `--date-to`
-- 专有名词：上 `--keyword`，比如 `Lo-Fi` 这类向量分不开的词
+1. **先 search，再 get，最后 handoff。** handoff 只是导航包；需要完整细节时一定用 `get`。
+2. **每条结果都要看 `raw`。** 如果 search 的 snippet 不够，直接用 `acs raw --event <id>` 回到原始行；SQLite 源用 `raw` 里的 `table`/`pk` 回查。
+3. **不要把 handoff 当摘要。** 它只做确定性提取，不编造结论；`decisions` 是原文片段，不是模型总结。
+4. **不确定就回原文。** 这是这个 skill 的核心设计：索引可以漏，但 raw locator 不会。
+5. **搜索时排除当前会话**，避免回声；用 `--exclude-session`（如果知道当前 session id）。
 
-## 结果怎么呈现给用户
+## 支持的 agent 名称
 
-1. 先给日期和标题，再给相似度分数
-2. 展示整个 session，匹配的那条用 `>>` 标记，用户能看到上下文而不是孤零零一句
-3. 找不到就直说，不要拿擦边结果凑数
-4. 如果匹配到了当前正在进行的 session，用 `--exclude-session` 过滤掉
+`claude-code`、`claude-desktop-code`、`codex`、`kimi`、`opencode`、`dsh`、`hana`、`workbuddy`。
 
-## 架构
+## 典型跨 agent 接手流程
 
-```
-conversations.db (SQLite)
-├── sessions   session_id, filename, date, title, message_count, file_mtime
-├── messages   session_id, msg_id, role, content, content_short, timestamp,
-│              msg_index, embedding (BLOB, float32)
-└── 检索       numpy 余弦相似度
+```bash
+# 1. 找会话
+acs search --query "每日简报" --format json
 
-数据流：
-  Session JSONL → embed.py → SQLite + 百炼 API → 向量存储
-  查询文本      → search.py → 百炼 API → numpy 余弦 → session 聚合
+# 2. 读完整事件 + 工具调用 + 任务
+acs get --session "claude-desktop-code:7d41a726-..." --format json
+
+# 3. 生成接手包
+acs handoff --session "claude-desktop-code:7d41a726-..." --recent 12 --format json
+
+# 4. 如果 handoff 缺细节，回到原始 JSONL
+acs raw --event "<event_id>"
 ```
 
-几个选择的理由：
+## 安装与配置
 
-- `text-embedding-v4` — 中英文都强，0.5 元/百万 token
-- SQLite BLOB + numpy float32 — 不用额外服务，单向量 ~4 KB，个人规模够用
-- 增量更新按 `mtime` + `msg_id` — 重跑便宜且幂等
-- session 聚合 — 一个匹配带出整段对话，保留上下文
+- 索引库：`~/.agent-conversation-search/index.db`
+- 配置：`~/.agent-conversation-search/.env`（600 权限，不提交）
+- 安装：`python3 acs.py install --replace-old --force`
+- 如果 agent 不识别 `~/.agents/skills`，安装脚本会在它已有的 skills 目录建软链。
 
-## 费用
+## 隐私
 
-按 `text-embedding-v4` 0.0005 元/千 token 估算：
-
-- 1 万条消息全量重建约 0.5–1 元
-- 每天增量几百条新消息，< 0.01 元
+入库和 embedding 前会自动脱敏 API key/token/password；原始文件不复制、不修改。`--no-embed` 可以完全本地运行，只用 FTS。

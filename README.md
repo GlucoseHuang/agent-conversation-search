@@ -1,130 +1,178 @@
-# conversation-search
+# agent-conversation-search
 
-给 AI agent 的长期记忆。把所有历史会话建成可检索的本地向量库，agent 可以用自然语言问"上次我们是怎么决定的"，而不是靠关键词碰运气。
+跨 agent 的本地对话检索。它不是“再做一个聊天记录搜索”，而是让一个 agent 能找到另一个 agent 之前做过什么，并且能回到原始文件核对。
 
-- 读 opencode / Hanako 的 session JSONL
-- 用阿里云百炼 `text-embedding-v4` 把每条消息转成向量
-- 向量存本地 SQLite
-- 检索时按余弦相似度排序，匹配的消息和整个对话上下文一起返回
+支持索引：
 
-## 为什么做这个
+| Agent | 本地数据 |
+| --- | --- |
+| Claude Code | `~/.claude/projects/**/*.jsonl`，含 `subagents/*.jsonl` |
+| Claude Desktop Code | `~/Library/Application Support/Claude*/local-agent-mode-sessions/**/.claude/projects/**/*.jsonl`，含 `.claude/tasks/*.json` |
+| Codex | `~/.codex/sessions/**/*.jsonl`、`archived_sessions/*.jsonl.zst`、`state_5.sqlite`、`goals_1.sqlite` |
+| Kimi Code | `~/.kimi-code/sessions/**/agents/*/wire.jsonl` 与 `state.json` |
+| OpenCode | `~/.local/share/opencode/opencode.db` 的 `session` / `message` / `part` / `todo` |
+| DeepSeek Harness (DSH) | `~/.dsh/sessions/**/session.v4.jsonl.zstd` |
+| HanaAgent | `~/.hanako/agents/*/sessions/**/*.jsonl`、`subagent-sessions/**/*.jsonl` |
+| WorkBuddy | `~/.workbuddy/projects/**/*.jsonl`，以及 `~/.workbuddy/tasks/*/*.json` |
 
-大模型的上下文窗口是有限的。一句"上次 TTS 方案怎么定的"应该足够让 agent 找回当时的讨论、约束条件和结论，不用用户记得是哪天、哪条消息、用的什么措辞。
+Claude Desktop 的 **Cowork / 普通聊天** 记录目前不在本地完整落盘，只有 Code 模式的沙箱 `.claude` 可以索引。这是有意为之，不是遗漏。
 
-关键词检索遇到同义词和改述就废。纯摘要的 RAG 又会丢掉原对话的细节。这个工具把原始消息都留着，按意思排。
+## 它保存什么
+
+统一成一张事件流，而不是只存“消息文本”：
+
+- `message`：user / assistant 消息
+- `reasoning`：思考过程
+- `tool_call` / `tool_result`：工具名、参数、输出、状态
+- `goal`：目标、阶段、预算
+- `todo`：任务、状态、阻塞关系
+- `attachment`：图片/文件的元数据与路径
+- `subagent`：子代理会话与父子关系
+- `file_change`：patch / 文件快照
+
+每条事件都带 **raw locator**：
+
+```json
+{"kind":"file","path":"/Users/glucose/.claude/projects/.../x.jsonl","line":42,"hash":"..."}
+```
+
+或 SQLite：
+
+```json
+{"kind":"sqlite","path":"/Users/glucose/.local/share/opencode/opencode.db","table":"part","pk":"prt_...","column":"data"}
+```
+
+搜索、`get`、`handoff` 都会返回它。结果不理想时，agent 可以直接读原始行或原始数据库行，不依赖索引的二手描述。
 
 ## 安装
 
 ```bash
-git clone https://github.com/GlucoseHuang/conversation-search.git
-cd conversation-search
-pip install -r requirements.txt
-cp .env.example .env
-# 编辑 .env，填 DASHSCOPE_API_KEY
+git clone https://github.com/GlucoseHuang/agent-conversation-search.git
+cd agent-conversation-search
+python3 -m venv .venv
+.venv/bin/pip install zstandard
 ```
 
-DashScope 密钥在 <https://dashscope.console.aliyun.com/> 申请。
-
-## 配置
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `DASHSCOPE_API_KEY` | — | 必填 |
-| `CONVERSATION_SESSIONS_DIR` | `~/.hanako/agents/hanako/sessions` | session JSONL 所在目录 |
-| `CONVERSATION_DB_PATH` | `./conversations.db` | SQLite 索引文件 |
-| `DASHSCOPE_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI 兼容端点 |
-| `EMBEDDING_MODEL` | `text-embedding-v4` | |
-| `EMBEDDING_DIMENSIONS` | `1024` | 推荐范围 512–1024 |
-
-## 用法
-
-### 建索引
+写入 embedding 配置（只放在本地，不要提交）：
 
 ```bash
-python3 embed.py                # 增量：只处理新增/变更的 session
-python3 embed.py --dry-run      # 只统计消息数和预估费用
-python3 embed.py --full         # 清空数据库重建
+mkdir -p ~/.agent-conversation-search
+cat > ~/.agent-conversation-search/.env <<'EOF'
+ACS_EMBEDDING_BASE_URL=https://your-openai-compatible-endpoint/v1
+ACS_EMBEDDING_API_KEY=...
+ACS_EMBEDDING_MODEL=qwen3.7-text-embedding
+EOF
+chmod 600 ~/.agent-conversation-search/.env
 ```
 
-可以反复跑没事。脚本会按 `mtime` 和 `msg_id` 去重，不会重复烧 API 额度。
-
-### 搜索
+macOS 也可以把 key 放进 Keychain，配置文件只留 base URL 和模型：
 
 ```bash
-# 语义检索，能理解同义词和改述
-python3 search.py --query "TTS 语音合成" --limit 5
-
-# 关键词，纯 SQL LIKE，不调 API
-python3 search.py --keyword "Lo-Fi" --limit 10
-
-# 限制日期范围
-python3 search.py --query "毕业论文" --date-from 2026-04-01 --date-to 2026-04-27
-
-# 排除当前 session，避免回声
-python3 search.py --query "音乐生成" --exclude-session <session_id>
-
-# 机器可读的输出
-python3 search.py --query "音乐生成" --format json
-
-# 只看匹配的那条消息，不带上下文
-python3 search.py --query "音乐生成" --no-full-session
+security add-generic-password -a "$USER" -s agent-conversation-search -w '<key>' -U
 ```
 
-### 当 opencode / Hanako skill 用
+读取顺序：环境变量 → `.env` → Keychain。
 
-把整个目录丢到 skills 路径下（比如 `~/.hanako/skills/conversation-search`），agent 就可以直接调 `embed.py` / `search.py`。`SKILL.md` 里的 description 是 skill loader 读的元信息。
+安装 skill 到 `~/.agents/skills/agent-conversation-search`，并按需给各 agent 建软链：
 
-## 输出长这样
-
-```
-Found 3 matching conversation(s):
-
-============================================================
-[1] 2026-04-12 - 音乐分享  (score: 0.802)
-  [User] Lo-Fi Electronic 太上头了，能再来点带人声的吗？
->>  [Assistant] 好嘞～让我深挖一下你的歌单，找几首合适的。
-  [User] 嗯，最好是晚上写代码听的
-
-============================================================
-[2] 2026-04-18 - TTS 实验  (score: 0.741)
-  ...
+```bash
+.venv/bin/python acs.py install
+# 直接替换旧的 Hanako conversation-search skill
+.venv/bin/python acs.py install --replace-old --force
 ```
 
-`>>` 标记的是匹配的那条，其余是这个 session 的上下文。脱离上下文的结果没什么用，所以默认会把整段对话带出来。
+安装会同时创建 `~/.local/bin/acs`。如果某个 agent 不识别 `~/.agents/skills`，安装脚本会在它已有的 skills 目录下建软链；没有的目录不会强行创建。
 
-## 费用
+## 使用
 
-百炼 `text-embedding-v4` 报价 0.0005 元/千 token（约 0.5 元/百万 token）。
+```bash
+# 全量/增量索引（默认增量；第一次会自动建库）
+acs index
 
-| 场景 | 大概费用 |
-| --- | --- |
-| 1 万条消息全量重建 | 0.5–1 元 |
-| 每天几百条新消息的增量 | < 0.01 元 |
+# 只建全文索引，不调 embedding
+acs index --no-embed
+
+# 搜索
+acs search --query "每日简报" --limit 5
+acs search --query "TTS 方案" --agent claude-code --date-from 2026-04-01
+acs search --keyword "Lo-Fi" --agent opencode
+
+# 读完整会话（含事件、工具调用、goal/todo、原始位置）
+acs get --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a"
+
+# 结构化接手包
+acs handoff --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a" --recent 12
+
+# 回到原始行
+acs raw --event "<event_id>"
+
+# 查看索引来源与统计
+acs sources
+acs stats
+```
+
+`search`、`get`、`handoff` 默认输出 JSON；加 `--format md` 可读版本。agent 调用建议用 JSON。
+
+### 搜索过滤
+
+`--agent`、`--project`、`--cwd`、`--date-from`、`--date-to`、`--role`、`--kind`、`--tool`、`--subagent`。
+
+### 混合检索
+
+- SQLite FTS5 全文/关键词，保证专有名词、代码、路径能命中。
+- OpenAI 兼容 embedding 做语义召回；默认只 embedding 消息、reasoning、提问，工具调用/结果仍由 FTS 精确检索，避免把大量工具输出全部向量化。
+- 两路结果用 RRF 合并；embedding 不可用时自动退回 FTS，不阻塞搜索。
+
+## 接手包（handoff）
+
+`handoff` 是**结构化导航包**，不是摘要替代品：
+
+- source：agent、session、cwd、原始路径、事件数
+- goals / todos / blockers
+- files：工具调用和 patch 里出现过的路径
+- decisions：带决策词的原文片段（不改写）
+- recent_messages / key_messages：最近和关键消息原文
+- tool_state：工具调用状态统计
+- raw_refs：每一项对应的原始位置
+- full_context：指向 `acs get` 的命令
+
+它参考了 handoff 的公开实践：高耦合任务保留完整 trace 的可回溯性，低耦合部分才压缩；结构化字段必须带来源，避免摘要幻觉。如果 handoff 缺信息，调用方应该用 `get` 或 `raw` 回原文。
+
+## 隐私
+
+- 索引默认只存**脱敏后的文本**；API key、token、password、Bearer 等会在入库和发送 embedding 前打码。
+- 原始 JSONL / SQLite **不复制、不修改**；只存路径、行号/主键和哈希。
+- `~/.agent-conversation-search/.env` 权限 600，已加入 `.gitignore`。
+- embedding 会把选中的事件文本发到你配置的 OpenAI 兼容端点；如果不想出本机，用 `--no-embed`，只走 FTS。
+- 附件默认只存元数据，不复制文件、不做 OCR。
+
+## 限制
+
+- Claude Desktop 普通聊天 / Cowork 本地没有完整正文，暂不支持；Code 模式支持。
+- WorkBuddy 的 task 目录与 session id 不一定能一一对应；匹配不到时任务不会强行挂到某个会话。
+- `handoff` 不生成 LLM 摘要；它只做确定性提取。需要摘要时由调用方基于 `get` 的原文自行生成。
+- 索引是缓存，原始文件删除后 raw locator 会失效；`--snapshot-raw` 尚未实现，后续可加。
 
 ## 架构
 
 ```
-Session JSONL ──► embed.py ──► SQLite + 百炼 API ──► 向量存储
-                                                   │
-查询文本   ──► search.py ──────────────────────────┤
-                                                   ▼
-                                          numpy 余弦相似度
-                                                   │
-                                                   ▼
-                                        按 session 聚合，渲染
+agent 原始文件 / SQLite
+        │  adapters/*
+        ▼
+  归一化 Session / Event / ToolCall / Goal / Todo / Attachment
+        │  redact + truncate
+        ▼
+  ~/.agent-conversation-search/index.db
+  ├── sessions / events / tool_calls / goals / todos / attachments
+  ├── events_fts (FTS5)
+  └── embeddings (float32 BLOB)
+        │
+        ├── acs search  → FTS + cosine → RRF → session 聚合
+        ├── acs get     → 完整事件流 + raw locator
+        ├── acs handoff → 结构化导航包 + raw refs
+        └── acs raw     → 直接读原始行/数据库行
 ```
-
-- 向量存 SQLite BLOB，单条 ~4 KB，float32 数组。不用额外服务、daemon、schema migration。
-- 相似度用 numpy 算余弦，个人规模够快。消息数过 10 万再考虑换 FAISS 或 sqlite-vec。
-- 增量更新靠文件 `mtime` 和消息 `msg_id`，幂等。
-- session 聚合：一条匹配带出整个对话，不丢上下文。
-
-## 隐私
-
-SQLite 数据库（`conversations.db`）里是每条被索引消息的原文。**别提交到 git。** 已经在 `.gitignore` 里了。
-
-多用户共用机器时，建议给每个用户设一个独立的 `CONVERSATION_DB_PATH`。
 
 ## License
 
-MIT，详见 `LICENSE`。
+MIT
