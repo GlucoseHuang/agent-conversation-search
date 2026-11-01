@@ -14,6 +14,7 @@ from .db import connect, get_event, get_session, init_db, stats
 from .embeddings import EmbeddingClient, EmbeddingUnavailable, embed_pending
 from .handoff import build_handoff, to_markdown
 from .indexer import index_all
+from .resolve import SessionResolutionError, resolve_session
 from .search import search
 
 
@@ -38,12 +39,10 @@ def _client(config: dict[str, Any], no_embed: bool) -> Optional[EmbeddingClient]
 
 
 def _resolve_session_id(conn: sqlite3.Connection, value: str) -> str:
-    if ":" in value:
+    try:
+        return resolve_session(conn, value)["id"]
+    except SessionResolutionError:
         return value
-    rows = conn.execute(
-        "SELECT id FROM sessions WHERE native_id = ?", (value,)
-    ).fetchall()
-    return rows[0]["id"] if len(rows) == 1 else value
 
 
 def _non_negative(value: str) -> int:
@@ -178,9 +177,13 @@ def cmd_search(args: argparse.Namespace, config: dict[str, Any]) -> int:
 def cmd_get(args: argparse.Namespace, config: dict[str, Any]) -> int:
     conn = _open(config)
     if args.session:
-        value = get_session(conn, args.session)
+        try:
+            session_id = resolve_session(conn, args.session)["id"]
+        except SessionResolutionError as error:
+            raise SystemExit(str(error)) from error
+        value = get_session(conn, session_id)
         if not value:
-            raise SystemExit(f"session not found: {args.session}")
+            raise SystemExit(f"session not found: {session_id}")
     elif args.event:
         value = get_event(conn, args.event)
         if not value:
@@ -206,7 +209,12 @@ def cmd_get(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 def cmd_handoff(args: argparse.Namespace, config: dict[str, Any]) -> int:
     conn = _open(config)
-    session = get_session(conn, args.session)
+    try:
+        session_id = resolve_session(conn, args.session)["id"]
+    except SessionResolutionError as error:
+        conn.close()
+        raise SystemExit(str(error)) from error
+    session = get_session(conn, session_id)
     conn.close()
     if not session:
         raise SystemExit(f"session not found: {args.session}")
@@ -337,6 +345,25 @@ def cmd_current(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_resolve(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    conn = _open(config)
+    try:
+        session = resolve_session(conn, args.input)
+    except SessionResolutionError as error:
+        conn.close()
+        if error.candidates:
+            print(_json({"error": str(error), "candidates": error.candidates}))
+        else:
+            print(str(error), file=sys.stderr)
+        return 1
+    conn.close()
+    if args.format == "id":
+        print(session["id"])
+    else:
+        print(_json(session))
+    return 0
+
+
 def cmd_install(args: argparse.Namespace, config: dict[str, Any]) -> int:
     from .install import install
 
@@ -438,18 +465,23 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.set_defaults(func=cmd_search)
 
     get = sub.add_parser("get", help="read a session or event")
-    get.add_argument("--session")
+    get.add_argument("--session", help="session id, native id, or deep link")
     get.add_argument("--event")
     get.add_argument("--context", type=int, default=0)
     get.add_argument("--format", choices=["json", "md"], default="json")
     get.set_defaults(func=cmd_get)
 
     handoff = sub.add_parser("handoff", help="build a structured handoff package")
-    handoff.add_argument("--session", required=True)
+    handoff.add_argument("--session", required=True, help="session id, native id, or deep link")
     handoff.add_argument("--recent", type=int, default=12)
     handoff.add_argument("--max-message-chars", type=int, default=4000)
     handoff.add_argument("--format", choices=["json", "md"], default="json")
     handoff.set_defaults(func=cmd_handoff)
+
+    resolve = sub.add_parser("resolve", help="resolve a session id or deep link")
+    resolve.add_argument("input")
+    resolve.add_argument("--format", choices=["json", "id"], default="json")
+    resolve.set_defaults(func=cmd_resolve)
 
     raw = sub.add_parser("raw", help="print the raw source for an event")
     raw.add_argument("--event", required=True)

@@ -56,8 +56,12 @@ acs search --query "每日简报" --limit 5 --format json
 acs search --keyword "TTS" --agent claude-code --date-from 2026-04-01 --format json
 acs search --query "文件改动" --tool Edit --format json
 
-# 读完整会话（事件、tool calls、goals、todos、attachments）
-acs get --session "<session_id>" --format json
+# 按裸 Session ID / 深度链接解析
+acs resolve "019e445d-e8bb-7781-bcfc-ce693c72d357" --format json
+acs resolve "codex://threads/019e445d-e8bb-7781-bcfc-ce693c72d357" --format json
+
+# 读完整会话（支持完整 ID、裸 ID、深度链接）
+acs get --session "codex://threads/019e445d-e8bb-7781-bcfc-ce693c72d357" --format json
 
 # 结构化接手包（导航用，不替代 get）
 acs handoff --session "<session_id>" --recent 12 --format json
@@ -70,7 +74,7 @@ acs raw --event "<event_id>"
 
 `search` 返回 session 列表，每个结果包含：
 
-- `session_id`、`agent`、`title`、`project`、`created_at`、`updated_at`
+- `session_id`、`native_id`、`agent`、`title`、`project`、`created_at`、`updated_at`
 - `match`：命中的事件（`event_id`、`role`、`kind`、`snippet`、`raw`）
 - `score`、`matches`
 

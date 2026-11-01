@@ -207,6 +207,7 @@ def search(
                 continue
             sessions[session_id] = {
                 "session_id": session_id,
+                "native_id": session["native_id"],
                 "agent": session["agent"],
                 "title": session["title"],
                 "project": session["project"],

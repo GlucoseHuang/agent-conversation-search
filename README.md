@@ -122,6 +122,11 @@ acs search --query "每日简报" --limit 5
 acs search --query "TTS 方案" --agent claude-code --date-from 2026-04-01
 acs search --keyword "Lo-Fi" --agent opencode
 
+# 按完整 ID、裸 Session ID 或深度链接找会话
+acs resolve "codex://threads/019e445d-e8bb-7781-bcfc-ce693c72d357"
+acs resolve "7d41a726-f39f-4adc-981e-7db13784f69a"
+acs get --session "codex://threads/019e445d-e8bb-7781-bcfc-ce693c72d357"
+
 # 读完整会话（含事件、工具调用、goal/todo、原始位置）
 acs get --session "claude-desktop-code:7d41a726-f39f-4adc-981e-7db13784f69a"
 
@@ -137,6 +142,21 @@ acs stats
 ```
 
 `search`、`get`、`handoff` 默认输出 JSON；加 `--format md` 可读版本。agent 调用建议用 JSON。
+
+### 直接按 Session ID / 深度链接查找
+
+`get`、`handoff`、`--exclude-session` 和 `acs resolve` 都支持：
+
+- `agent:native_id`，如 `codex:019e...`
+- 裸 native id，如 `019e...`、`session_...`、`ses_...`
+- Codex：`codex://threads/<id>`、`codex://shared-thread/<id>`
+- Claude：`claude://chat/<uuid>`
+- Kimi：`kimi-code://session/<id>`
+- OpenCode：`opencode://session/<ses_...>`
+- DSH：`dsh://session/<session-...>`
+- WorkBuddy：`workbuddy://<id>`
+
+裸 ID 在多个 agent 中重名时会返回候选列表并退出 1，不会乱猜。
 
 ### 避免搜到自己
 
