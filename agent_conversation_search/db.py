@@ -550,7 +550,7 @@ def _row_with_metadata(row: sqlite3.Row) -> dict[str, Any]:
     return value
 
 
-def stats(conn: sqlite3.Connection) -> dict[str, Any]:
+def stats(conn: sqlite3.Connection, check_orphans: bool = True) -> dict[str, Any]:
     rows = conn.execute(
         "SELECT agent, COUNT(*) AS sessions FROM sessions GROUP BY agent ORDER BY agent"
     ).fetchall()
@@ -567,10 +567,11 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
             "AND text IS NOT NULL AND text != ''"
         ).fetchone()[0]
         fts["missing"] = fts["expected"] - fts["docs"]
-        fts["orphans"] = conn.execute(
-            "SELECT COUNT(*) FROM events_fts_docsize d "
-            "LEFT JOIN events e ON e.rowid = d.id WHERE e.rowid IS NULL"
-        ).fetchone()[0]
+        if check_orphans:
+            fts["orphans"] = conn.execute(
+                "SELECT COUNT(*) FROM events_fts_docsize d "
+                "LEFT JOIN events e ON e.rowid = d.id WHERE e.rowid IS NULL"
+            ).fetchone()[0]
     except sqlite3.Error:
         pass
     return {

@@ -203,7 +203,7 @@ def index_all(
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except sqlite3.Error:
         pass
-    summary = stats(conn)
+    summary = stats(conn, check_orphans=False)
     conn.close()
     return {
         "indexed": results,
