@@ -78,6 +78,43 @@ def test_same_session_replace_keeps_fts_documents(tmp_path):
     assert search(conn, "same-token", client=None, limit=5)
 
 
+def test_reindex_appends_without_dropping_old_events(tmp_path):
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    first = _session("第一段")
+    replace_session(conn, first)
+
+    appended = _session("第一段")
+    appended.events.append(
+        Event(
+            2,
+            "2026-10-31T10:00:02Z",
+            "user",
+            "message",
+            "追加的一段",
+            RawRef(kind="file", path="/tmp/demo.jsonl", line=3, hash="h3"),
+        )
+    )
+    replace_session(conn, appended)
+
+    value = get_session(conn, "test:s1")
+    assert len(value["events"]) == 3
+    assert search(conn, "第一段", client=None, limit=5)
+    assert search(conn, "追加的一段", client=None, limit=5)
+    assert conn.execute("SELECT COUNT(*) FROM events_fts_docsize").fetchone()[0] == 3
+
+
+def test_reindex_replaces_edited_event_text(tmp_path):
+    conn = connect(tmp_path / "index.db")
+    init_db(conn)
+    replace_session(conn, _session("原始内容"))
+    replace_session(conn, _session("改写内容"))
+
+    assert search(conn, "原始内容", client=None, limit=5) == []
+    assert search(conn, "改写内容", client=None, limit=5)
+    assert conn.execute("SELECT COUNT(*) FROM events_fts_docsize").fetchone()[0] == 2
+
+
 def test_todos_from_different_sessions_do_not_collide(tmp_path):
     conn = connect(tmp_path / "index.db")
     init_db(conn)

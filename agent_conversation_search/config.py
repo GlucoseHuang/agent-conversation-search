@@ -143,8 +143,8 @@ def load_config() -> dict[str, Any]:
             ),
             "active_grace_seconds": int(
                 os.environ.get("ACS_ACTIVE_GRACE_SECONDS")
-                or index.get("active_grace_seconds")
-                or 3600
+                if os.environ.get("ACS_ACTIVE_GRACE_SECONDS") is not None
+                else index.get("active_grace_seconds", 0)
             ),
             "event_caps": index.get(
                 "event_caps",

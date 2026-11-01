@@ -43,8 +43,11 @@ acs search --query "上次那个方案" --exclude-session "$CURRENT" --format js
 
 ```bash
 # 刷新索引（默认增量，只建 FTS；skill 调用前可先跑一次）
-# 默认跳过最近 1 小时仍在写的源，避免当前会话/大文件反复重索引
+# 默认收录活跃/正在写的会话，刚聊完的内容也能立刻搜到
 acs index
+
+# 快速模式：跳过最近 1 小时仍在写的源
+acs index --active-grace 3600
 
 # 可选：只给某个会话补语义向量（默认不跑全量 embedding）
 acs embed --session "<session_id>" --limit 100

@@ -433,7 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument(
         "--active-grace",
         type=int,
-        help="seconds to treat a recently written source as active (default 3600)",
+        help="seconds to treat a recently written source as active (default 0: index active sources)",
     )
     index.add_argument("--agent", action="append")
     index.set_defaults(func=cmd_index)

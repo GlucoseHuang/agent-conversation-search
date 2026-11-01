@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_fts_eligible ON events(kind, role)
+  WHERE text IS NOT NULL AND text != '';
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,
@@ -325,12 +327,14 @@ def replace_session(
     session.finalize()
     upsert_session(conn, session)
 
-    existing_ids = {
-        row["id"]
+    existing = {
+        row["id"]: (row["text_hash"], row["chars"])
         for row in conn.execute(
-            "SELECT id FROM events WHERE session_id = ?", (session.id,)
+            "SELECT id, text_hash, length(text) AS chars FROM events WHERE session_id = ?",
+            (session.id,),
         )
     }
+    existing_ids = set(existing)
     new_ids = {event.event_id for event in session.events if event.event_id}
 
     for old_id in existing_ids - new_ids:
@@ -349,6 +353,9 @@ def replace_session(
         truncated = len(stored_text) > event_limit
         if truncated:
             stored_text = stored_text[:event_limit]
+        old = existing.get(event.event_id)
+        if old and old[0] == original_hash and old[1] == len(stored_text):
+            continue
         raw = event.raw.to_dict()
         conn.execute(
             """

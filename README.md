@@ -87,12 +87,11 @@ security add-generic-password -a "$USER" -s agent-conversation-search -w '<key>'
 
 ```bash
 # 全量/增量索引（默认增量；只建 FTS，不调 embedding）
-# 默认跳过最近 1 小时仍在写的源，避免大文件/当前会话反复重索引
+# 默认索引活跃/正在写的会话，保证刚聊完的内容也能搜到
 acs index
 
-# 强制把活跃/正在写的会话也索引
-acs index --include-active
-acs index --active-grace 0
+# 快速模式：跳过最近 1 小时仍在写的源，适合只需要历史对话时省时间
+acs index --active-grace 3600
 ```
 
 SQLite 源（OpenCode 等）的签名只看主库 + 非空 WAL，忽略 `-shm` 和空 WAL，避免应用只是触碰文件就触发整库重索引。
@@ -158,7 +157,7 @@ acs stats
 
 裸 ID 在多个 agent 中重名时会返回候选列表并退出 1，不会乱猜。
 
-如果目标会话还没进索引（例如最近 1 小时内还在写、被 `acs index` 跳过），`get` / `handoff` / `resolve` 会按 ID **自动定位原始 session 文件并只索引这一个会话**，不需要先手动跑 `acs index`。
+如果目标会话还没进索引（例如刚创建、还没跑过 `acs index`），`get` / `handoff` / `resolve` 会按 ID **自动定位原始 session 文件并只索引这一个会话**，不需要先手动跑 `acs index`。搜索刚聊完的会话不需要额外参数，`acs index` 默认就会收录活跃会话。
 
 ### 避免搜到自己
 
