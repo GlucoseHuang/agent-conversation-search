@@ -14,6 +14,7 @@ from .db import connect, get_event, get_session, init_db, stats
 from .embeddings import EmbeddingClient, EmbeddingUnavailable, embed_pending
 from .handoff import build_handoff, to_markdown
 from .indexer import index_all
+from .ondemand import ensure_session
 from .resolve import SessionResolutionError, resolve_session
 from .search import search
 
@@ -178,7 +179,7 @@ def cmd_get(args: argparse.Namespace, config: dict[str, Any]) -> int:
     conn = _open(config)
     if args.session:
         try:
-            session_id = resolve_session(conn, args.session)["id"]
+            session_id = ensure_session(conn, config, args.session)["id"]
         except SessionResolutionError as error:
             raise SystemExit(str(error)) from error
         value = get_session(conn, session_id)
@@ -210,7 +211,7 @@ def cmd_get(args: argparse.Namespace, config: dict[str, Any]) -> int:
 def cmd_handoff(args: argparse.Namespace, config: dict[str, Any]) -> int:
     conn = _open(config)
     try:
-        session_id = resolve_session(conn, args.session)["id"]
+        session_id = ensure_session(conn, config, args.session)["id"]
     except SessionResolutionError as error:
         conn.close()
         raise SystemExit(str(error)) from error
@@ -348,7 +349,7 @@ def cmd_current(args: argparse.Namespace, config: dict[str, Any]) -> int:
 def cmd_resolve(args: argparse.Namespace, config: dict[str, Any]) -> int:
     conn = _open(config)
     try:
-        session = resolve_session(conn, args.input)
+        session = ensure_session(conn, config, args.input)
     except SessionResolutionError as error:
         conn.close()
         if error.candidates:

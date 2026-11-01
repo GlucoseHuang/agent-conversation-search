@@ -81,6 +81,10 @@ def _tokens(value: str) -> list[str]:
     return result
 
 
+def session_tokens(value: str) -> list[str]:
+    return _tokens(value)
+
+
 def resolve_session(conn: sqlite3.Connection, value: str) -> dict[str, Any]:
     value = unquote(value.strip())
     if not value:

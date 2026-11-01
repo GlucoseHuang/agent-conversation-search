@@ -61,6 +61,7 @@ acs resolve "019e445d-e8bb-7781-bcfc-ce693c72d357" --format json
 acs resolve "codex://threads/019e445d-e8bb-7781-bcfc-ce693c72d357" --format json
 
 # 读完整会话（支持完整 ID、裸 ID、深度链接）
+# 如果会话还没进索引，会按 ID 从原始文件自动索引这一个会话
 acs get --session "codex://threads/019e445d-e8bb-7781-bcfc-ce693c72d357" --format json
 
 # 结构化接手包（导航用，不替代 get）
